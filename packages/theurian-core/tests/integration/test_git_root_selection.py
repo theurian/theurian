@@ -5,11 +5,16 @@ An inherited ``GIT_DIR``/``GIT_WORK_TREE`` names one repository's object store a
 work tree; the CLI keeps that environment for the whole command, so a root chosen under it
 would have the deciding reads answer for a repository the project is not in. Each case builds
 real repositories under ``tmp_path``: ``R`` is the one the environment names, ``X`` the one the
-work tree is actually inside.
+work tree is actually inside. The rows after them pin the bytes of git's stdout (#1039).
 """
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -137,3 +142,114 @@ def test_inherited_tracing_does_not_change_the_root_or_the_descriptive_reads(
         "xbranch",
         X_URL,
     )
+
+
+TRAILER = "x\n\nReview-Finding: code-review HIGH — from the sibling"
+
+
+def _with_origin_main(path: Path, message: str) -> Path:
+    repo = new_repo(path)
+    sha = commit_file(repo, REL, SQL.decode(), message)
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    return repo
+
+
+@pytest.mark.parametrize("suffix", [" ", "\t", "\n", "\r", "\u00a0", "\u3000"])
+def test_a_project_directory_with_trailing_whitespace_is_not_mistaken_for_its_sibling(
+    tmp_path: Path, suffix: str
+) -> None:
+    """Stripping git's output renames ``proj `` to ``proj``, adopting the sibling's findings."""
+    project = _with_origin_main(tmp_path / f"proj{suffix}", "x\n\nno trailer")
+    _with_origin_main(tmp_path / "proj", TRAILER)
+
+    root = find_git_root(project)
+
+    assert root is not None
+    assert root.resolve() == project.resolve()
+    assert GitTrailerFindingSource(root).load_findings().accepted == ()
+
+
+_LOCALE_CHILD = textwrap.dedent(
+    """
+    import json, locale, sys
+    from pathlib import Path
+    from theurian.cli.context import find_git_root
+    from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
+
+    root = find_git_root(Path(sys.argv[1]))
+    accepted = GitTrailerFindingSource(root).load_findings().accepted if root else []
+    print(json.dumps({
+        "encoding": locale.getencoding(),
+        "utf8_mode": sys.flags.utf8_mode,
+        "root": None if root is None else root.as_posix().encode("utf-8", "surrogateescape").hex(),
+        "accepted": len(accepted),
+    }))
+    """
+)
+
+
+def test_a_non_utf8_locale_does_not_turn_the_project_root_into_its_mojibake_sibling(
+    tmp_path: Path,
+) -> None:
+    """The root is git's bytes decoded as the filesystem does, whatever codec the locale names.
+
+    UTF-8 mode is forced off in the child: under it (``PYTHONUTF8=1``, default from 3.15) a
+    locale-decoding implementation is accidentally correct and the row could not fail.
+    """
+    project = _with_origin_main(tmp_path / "proj-é", "x\n\nno trailer")
+    _with_origin_main(tmp_path / "proj-é".encode().decode("iso8859-1"), TRAILER)
+    env = {**os.environ, "LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1", "PYTHONUTF8": "0"}
+
+    out = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _LOCALE_CHILD, str(project)],
+        env=env,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    ).stdout
+    report = json.loads(out)
+
+    assert report["utf8_mode"] == 0
+    if report["encoding"].lower().replace("-", "").replace("_", "") not in {"iso88591", "latin1"}:
+        pytest.skip(
+            f"locale en_US.ISO8859-1 is not available here (child encoding {report['encoding']})"
+        )
+    assert bytes.fromhex(report["root"]).decode("utf-8") == project.resolve().as_posix()
+    assert report["accepted"] == 0
+
+
+def test_a_branch_name_that_is_not_utf8_does_not_make_default_branch_raise(
+    tmp_path: Path,
+) -> None:
+    """git ref names are bytes; an undecodable one must degrade, not abort the command."""
+    repo = new_repo(tmp_path / "X")
+    git(repo, "symbolic-ref", "HEAD", os.fsdecode(b"refs/heads/caf\xe9"))
+
+    assert default_branch(repo) == "caf\ufffd"
+
+
+@pytest.mark.parametrize("url", ["https://example.invalid/x ", "https://example.invalid/x\n"])
+def test_a_remote_url_with_trailing_whitespace_is_reported_as_stored(
+    tmp_path: Path, url: str
+) -> None:
+    """Only git's own newline is a terminator; the url's trailing whitespace is part of it."""
+    repo = new_repo(tmp_path / "X")
+    git(repo, "config", "remote.origin.url", url)
+
+    assert repository_url(repo) == url
+
+
+def test_a_detached_head_reports_main_as_the_default_branch(tmp_path: Path) -> None:
+    """With no branch to name, the recorded default stays ``main`` rather than an empty string."""
+    repo = new_repo(tmp_path / "X")
+    commit_file(repo, REL, SQL.decode())
+    git(repo, "checkout", "-q", "--detach")
+
+    assert default_branch(repo) == "main"
+
+
+def test_a_repository_without_an_origin_reports_no_url(tmp_path: Path) -> None:
+    """No remote is ``None``, not an empty string recorded as the repository url."""
+    repo = new_repo(tmp_path / "X")
+
+    assert repository_url(repo) is None

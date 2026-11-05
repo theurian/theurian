@@ -146,6 +146,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **The CLI's git reads take the project root byte-exact and strip only git's
+  newline** ([#1039](https://github.com/theurian/theurian/issues/1039)). Each
+  git read in `cli/context.py` used the locale codec and `str.strip()`. A
+  project directory whose name ends in whitespace (anything `str.isspace()`
+  accepts, such as an IME's ideographic space U+3000) resolved to a sibling
+  repository named without it, whose `Review-Finding:` trailers were accepted.
+  Under a non-UTF-8 locale on macOS a non-ASCII path resolved to a mis-decoded
+  sibling with the same effect or a missing directory (`en_US.ISO8859-1`), or
+  raised `UnicodeDecodeError` (`ja_JP.SJIS`, for `プロジェクト`). A branch or
+  remote url the locale could not decode raised it too, crashing
+  `project register` and `migrate apply`, and the url `ingest`; a url ending in
+  whitespace was recorded stripped. The root is now `os.fsdecode` of git's
+  bytes; head, branch and url decode as UTF-8 with U+FFFD replacement.
+
 - **`theurian propose accept`'s floor and revision-conflict remedies no longer
   send a proposal `theurian propose` cannot draft back to `theurian propose`**
   ([#915](https://github.com/theurian/theurian/issues/915)). The lowering and
