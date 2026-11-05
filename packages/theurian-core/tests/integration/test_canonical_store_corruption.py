@@ -1479,7 +1479,7 @@ async def test_the_corpus_reaches_each_converter_family(
 
 # -- Where the guard sits, on the writer -----------------------------------
 #
-# `SqliteWriter` reads seven times and is guarded five times (`_writer_reads`,
+# `SqliteWriter` reads eight times and is guarded six times (`_writer_reads`,
 # held against the two lists below by the partition test). Before this sweep
 # held either half, deleting any of the then four guards left the suite green
 # while the corrupted cell walked out of `theurian migrate status` -- so the
@@ -1497,16 +1497,17 @@ async def test_the_corpus_reaches_each_converter_family(
 # hash, which sends the next command to a different -- empty, undamaged --
 # database file (ADR-0016). There is no CLI invocation that reaches them over a
 # damaged state. `applied_migrations` is the exception and is swept through
-# `migrate status` as well; `list_project_relations` runs on every apply
-# (ADR-0040 decision 5), so `migrate apply` with nothing pending reaches it too.
+# `migrate status` as well; INV-6's guard runs on every apply (ADR-0040 decision
+# 5), so `migrate apply` with nothing pending reaches `list_project_relations` and
+# `list_project_aliases` too.
 
 PROJECT_ID: Final = ProjectId("demo")
 ITEM_ID: Final = ItemId("architecture.auth-policy")
 REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
-#: Five of the seven reads :class:`SqliteWriter` performs, each over a cell whose
-#: converter quotes what it would not accept. Every one of these five sits behind
+#: Six of the eight reads :class:`SqliteWriter` performs, each over a cell whose
+#: converter quotes what it would not accept. Every one of these six sits behind
 #: a guard today. The other two -- `append_revision`'s `SELECT item_id,
 #: content_sha256` and `_refuse_pointer_to_another_items_revision`'s `SELECT
 #: item_id` -- deliberately do not, and are recorded with their reasons in
@@ -1548,6 +1549,12 @@ WRITER_READS: Final = (
         "knowledge_relations",
         "relation_type",
         lambda writer: writer.list_project_relations(PROJECT_ID),
+    ),
+    (
+        "list_project_aliases",
+        "knowledge_aliases",
+        "item_id",
+        lambda writer: writer.list_project_aliases(PROJECT_ID),
     ),
 )
 
@@ -1737,7 +1744,7 @@ def test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it(
 def test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state(
     corpus: Corpus,
 ) -> None:
-    """The inverse, and the reason the writer is guarded five times and not six.
+    """The inverse, and the reason the writer is guarded six times and not seven.
 
     `append_revision` reads a stored `content_sha256` and is deliberately *not*
     guarded, because past ``BEGIN IMMEDIATE`` a failure is the caller's statement

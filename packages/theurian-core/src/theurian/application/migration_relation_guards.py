@@ -15,39 +15,63 @@ neither reason ``ACYCLIC_RELATIONS`` records, and is not refused.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping
+from itertools import pairwise
 
 from theurian.domain.enums import INVERSE_RELATIONS, RelationType
 from theurian.domain.errors import RelationCycleError
 from theurian.domain.identifiers import ItemId
-from theurian.domain.knowledge import KnowledgeRelation
+from theurian.domain.knowledge import KnowledgeAlias, KnowledgeRelation
 
 
-def refuse_relation_cycles(relations: Iterable[KnowledgeRelation]) -> None:
+def refuse_relation_cycles(rows: Collection[KnowledgeRelation | KnowledgeAlias]) -> None:
     """Raise on the first cycle, graphs and items visited in sorted order.
+
+    Ids the alias map connects, at any depth, are one node: a served read resolves aliases.
+    Literal ids go first, so only a cycle an alias joins is named by its rows as stored,
+    which is what ``removeRelation`` deletes.
 
     Raises:
         RelationCycleError: Naming the graph's relation type and the cycle's items.
     """
-    graphs: dict[RelationType, dict[str, list[str]]] = {}
-    for relation in relations:
-        if not relation.must_be_acyclic():
-            continue
-        graph, source, target = (
-            relation.relation_type,
-            relation.source_item_id.value,
-            relation.target_item_id.value,
-        )
-        if graph is RelationType.SUPERSEDED_BY:
-            graph, source, target = INVERSE_RELATIONS[graph], target, source
-        graphs.setdefault(graph, {}).setdefault(source, []).append(target)
-    for graph in sorted(graphs):
-        cycle = _first_cycle(graphs[graph])
-        if cycle is not None:
-            raise RelationCycleError(graph, tuple(ItemId(item) for item in cycle))
+    aliases = dict(
+        sorted((a.alias.value, a.item_id.value) for a in rows if isinstance(a, KnowledgeAlias))
+    )
+    parent: dict[str, str] = {}
+
+    def find(item: str) -> str:
+        while (up := parent.get(item, item)) != item:
+            parent[item] = item = parent.get(up, up)
+        return item
+
+    for alias, target in aliases.items():
+        parent[find(alias)] = find(target)
+    for node in ({}, {item: find(item) for pair in aliases.items() for item in pair}):
+        graphs: dict[RelationType, dict[str, dict[str, list[tuple[str, str]]]]] = {}
+        for relation in rows:
+            if isinstance(relation, KnowledgeAlias) or not relation.must_be_acyclic():
+                continue
+            graph, source, target = (
+                relation.relation_type,
+                relation.source_item_id.value,
+                relation.target_item_id.value,
+            )
+            row = f"{source} {graph} {target}"
+            if graph is RelationType.SUPERSEDED_BY:
+                graph, source, target = INVERSE_RELATIONS[graph], target, source
+            edges = graphs.setdefault(graph, {}).setdefault(node.get(source, source), {})
+            edges.setdefault(node.get(target, target), []).append((row, source))
+        for graph in sorted(graphs):
+            cycle = _first_cycle(graphs[graph])
+            if cycle is not None:
+                steps = [min(graphs[graph][a][b]) for a, b in pairwise((*cycle, cycle[0]))]
+                nodes = set(cycle)
+                joined = [f"alias {a} -> {t}" for a, t in aliases.items() if node.get(a) in nodes]
+                through = (*(text for text, _ in steps), *joined) if joined else ()
+                raise RelationCycleError(graph, tuple(ItemId(s) for _, s in steps), through)
 
 
-def _first_cycle(successors: dict[str, list[str]]) -> tuple[str, ...] | None:
+def _first_cycle(successors: Mapping[str, Iterable[str]]) -> tuple[str, ...] | None:
     """The first cycle an iterative depth-first search meets, or ``None``.
 
     Iterative because a 10,000-relation chain is deeper than Python's recursion limit.

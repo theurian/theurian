@@ -1380,6 +1380,14 @@ class SqliteWriter:
             ).fetchall()
             return tuple(_relation_from_row(row) for row in rows)
 
+    def list_project_aliases(self, project_id: ProjectId) -> tuple[KnowledgeAlias, ...]:
+        with _reading():
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_aliases WHERE project_id = ? ORDER BY alias",
+                (project_id.value,),
+            ).fetchall()
+            return tuple(_alias_from_row(row) for row in rows)
+
     def add_alias(self, alias: KnowledgeAlias) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO knowledge_aliases (alias, item_id, project_id, created_at) "

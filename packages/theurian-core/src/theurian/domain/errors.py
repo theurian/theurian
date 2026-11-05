@@ -133,21 +133,24 @@ class RelationCycleError(MigrationError):
     linking back to the first.
     """
 
-    def __init__(self, relation_type: RelationType, cycle: tuple[ItemId, ...]) -> None:
+    def __init__(
+        self, relation_type: RelationType, cycle: tuple[ItemId, ...], through: tuple[str, ...] = ()
+    ) -> None:
         self.relation_type = relation_type
         self.cycle = cycle
-        path = f" {relation_type} ".join(str(item) for item in (*cycle, cycle[0]))
+        path = ", ".join(through) or f" {relation_type} ".join(map(str, (*cycle, cycle[0])))
         super().__init__(f"The knowledge relations form a {relation_type} cycle (INV-6): {path}")
         inverse = INVERSE_RELATIONS.get(relation_type)
-        stored_either_way = (
+        either_way = (
             ""
             if inverse is None
             else f" (or for the `{inverse}` relation from the next item back to it, "
             "whichever the migrations recorded)"
         )
+        relation = f"`{relation_type}` relation from an item of this cycle to the next{either_way}"
         self.remedy = (
-            f"Write a new migration with a `removeRelation` for one `{relation_type}` relation "
-            f"from an item of this cycle to the next{stored_either_way}, then run "
+            "Write a new migration with a `removeRelation` for one "
+            f"{'relation this cycle lists, exactly as listed' if through else relation}, then run "
             "`theurian migrate apply` again."
         )
 
