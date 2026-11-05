@@ -868,6 +868,20 @@ Rests on enforcement that already holds:
   decision 2's environment is #1012's (`342ea607`).
 - **`_closed_value`**, the parse decision 8 requires.
 
+Landed from item 1 below in #1033's schema-v5 pull request
+([#1059](https://github.com/theurian/theurian/pull/1059)):
+
+- **`SCHEMA_VERSION` 5 and decision 4's columns**: `test_the_schema_version_is_five`,
+  `test_schema_metadata_has_the_walk_record_columns`,
+  `test_traceability_edges_has_a_source_commit_column`;
+- **decision 5's guard, called from `MigrationEngine.apply`**:
+  `test_must_be_acyclic_has_one_caller_under_src`, and the RED drivers
+  `test_a_v4_state_holding_a_supersession_cycle_is_refused_and_its_rebuild_raises`
+  and `test_an_apply_with_nothing_pending_refuses_a_planted_cycle_and_publishes_nothing`;
+- **the two-way open**:
+  `test_a_database_of_the_other_version_is_refused_before_any_row_is_decoded`;
+- **the BREAKING CHANGELOG entry, and FR-K8 restated.**
+
 Still owed, with the issue or slice that will satisfy it:
 
 1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
@@ -907,9 +921,20 @@ Still owed, with the issue or slice that will satisfy it:
    rolls back and keeps serving it), never later (a Core built between them
    serves a v5 state no guard checked, and a rule that no core-v* tag sits
    between them leans on release ordering, which this ADR rejects). Check:
-   `git log -S` for the `SCHEMA_VERSION` 5 line and for `RelationCycleError`
-   name the same sha. A later revert or cherry-pick that moves one without the
-   other is outside the condition. Its pull request also carries a
+   these three each print one sha, the same one: on the branch the commit that
+   bumps the version, on `main` the squash commit.
+
+   ```sh
+   git log -S'SCHEMA_VERSION: Final = 5' --format=%H -- packages/theurian-core/src/theurian/infrastructure/sqlite/schema.py
+   git log -S'.must_be_acyclic(' --format=%H -- packages/theurian-core/src
+   git log -S'class RelationCycleError' --format=%H -- packages/theurian-core/src
+   ```
+
+   Their positive control, `-G'^SCHEMA_VERSION: Final = '` over the same file,
+   lists every commit that changed the version line, newest first; before #1033
+   its first is the 3 → 4 bump, `7d7195b0`. A later revert or cherry-pick that
+   moves one without the other is outside the condition. Its pull request also
+   carries a
    **BREAKING** CHANGELOG entry naming the refusal; FR-K8's "a no-op, not an
    error" (`docs/architecture/requirements-analysis.md:38`), restated as scope
    over applied sets, since under the condition a cyclic set is never applied;
