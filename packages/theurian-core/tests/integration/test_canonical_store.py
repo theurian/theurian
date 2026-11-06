@@ -971,6 +971,7 @@ _ALIAS_CYCLES = [
     ("item a; sup a b; dep a x; alias x b",),
     ("sup a b; sup b x; alias x c", "unalias x; alias x a"),
     ("sup y x; alias y a; alias x y",),
+    ("item a; item b; dep a b; alias a b",),
 ]
 
 
@@ -989,7 +990,7 @@ def _apply_steps(lock: Path, tmp_path: Path, steps: tuple[str, ...]) -> None:
     _apply(tmp_path / "s.sqlite", lock, MigrationSet.ordered(migrations))
 
 
-_IDS = ["source alias", "later alias", "self-loop", "supersededBy alias", "retarget", "chain"]
+_IDS = ["source", "later", "self-loop", "supersededBy", "retarget", "chain", "rename"]
 
 
 @pytest.mark.parametrize("steps", _ALIAS_CYCLES, ids=_IDS)
