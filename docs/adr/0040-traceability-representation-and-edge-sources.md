@@ -525,6 +525,8 @@ relation row of the project the apply leaves — whatever operation wrote it,
 `addRelation` or `deprecateItem`'s `supersededBy` (F2). A later `removeRelation`
 in the same set therefore cures an earlier cycle, and no applied document, which
 is frozen, ever needs editing. A refusal rolls the transaction back.
+Ids the alias map connects, through any chain, are one node, since `list_relations` resolves an
+alias first (`store.py:927-941`), so a rename whose `supersededBy` names its successor is refused.
 
 **The refusal is a new `RelationCycleError`, a `MigrationError`, not
 `MigrationCycleError`.** That one means a `dependsOn` cycle among migrations, so
@@ -576,7 +578,7 @@ EOF
 holds no relation row (F2). Corpora in other repositories cannot be measured
 from here. One with a cycle meets `RelationCycleError` at its first apply under
 the enforcing Core, naming the cycle; until a migration removes a relation of
-it, that Core builds no state for the project.
+it, that Core publishes no state for the project.
 
 **No `apiVersion`, `protocolVersion` or `MIGRATION_ENGINE_VERSION` bump.**
 ADR-0039 decision 6 sends a change that "moves which rows a gate reads", relation

@@ -1185,7 +1185,8 @@ flowchart TD
     O --> P["Record id + checksum in migration_history"]
     P --> Q["Commit"]
     Q --> I
-    Q --> R["Recompute the state hash"]
+    Q --> Y{"A supersedes or depends_on cycle,<br/>ids an alias joins taken as one?"} -->|no| R["Recompute the state hash"]
+    Y -->|yes| Z["FATAL: RelationCycleError (INV-6).<br/>The whole apply rolls back."]
 
     style E fill:#8a2f2f,color:#fff
     style H fill:#8a2f2f,color:#fff
@@ -1251,6 +1252,7 @@ scanning a directory listing and may be changed freely.
 | `DuplicateContentFileError` | Two different revisions name one `contentFile` | Give the later revision a body file of its own under `.theurian/knowledge/` and point that migration at it; pin both with `contentSha256` while you are there. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
 | `UnenforceableScopeError` | A revision named a `tenantId` other than `local` or an `aclGroup` other than `default` | Edit it to the default. **Unless the revision was already applied** — then the fix above does not apply; see [Upgrading a project that already applied one of these](#upgrading-a-project-that-already-applied-one-of-these), and do not use this row's checksum-error advice as a substitute (issue #63). |
 | `AliasItemCollisionError` | An `addAlias` key equals the id of an item whose final status is not `deprecated` | Remove the `addAlias`, or give the item a distinct id — an alias key and an item id must not be the same string. If it is a rename, deprecate the old item first (`deprecateItem`), the one shape this allows. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
+| `RelationCycleError` | The relations the apply leaves form a `supersedes` (or inverse `superseded_by`) or `depends_on` cycle, counting ids an alias joins as one item (INV-6) | Write a new migration with a `removeRelation` for one relation of the cycle, as the remedy names it. A [rename](#an-alias-key-is-not-an-item-id-t-21) whose `deprecateItem` also sets `supersededBy` to the alias's target is such a cycle; if that migration is not applied yet, delete the `supersededBy` instead. |
 
 ## Related
 

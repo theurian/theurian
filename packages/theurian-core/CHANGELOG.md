@@ -65,7 +65,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     row; a loop mixing the two graphs is not refused. The check reads every
     relation row the apply leaves, on every apply, including one with nothing
     pending, so a corpus a previous Core applied with a cycle is refused at its
-    first apply under this one, which builds no state for it until the cycle is
+    first apply under this one, which publishes no state for it until the cycle is
     broken. The cure is a new migration in `.theurian/migrations/` whose
     `removeRelation` breaks it, as the remedy says; `propose accept` refuses
     that migration as a proposal while the landed set holds the cycle.
@@ -74,6 +74,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     ([#1056](https://github.com/theurian/theurian/issues/1056));
     `theurian propose`, `propose accept` and `okf import` refuse where they
     replay it (ADR-0040 decision 5).
+    Ids the alias map connects count as one item: a cycle an alias closes is refused, as is a
+    rename whose `supersededBy` names its successor; remove the `supersedes` row it wrote.
 - For remedy parsers: the race remedy prints `expectedRevision: <rev>`,
   on the content route `--expected-revision <rev>` and, when the landed
   writer of `<rev>` replays after the proposal,
