@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,7 @@ from fakes import FrozenClock
 
 from theurian.application import migration_engine
 from theurian.application.migration_engine import MigrationEngine
+from theurian.domain import migration as mg
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
     SURFACEABLE_STATUSES,
@@ -951,6 +953,61 @@ def test_a_v4_state_holding_a_supersession_cycle_is_refused_and_its_rebuild_rais
         RelationType.SUPERSEDES,
         (ITEM, OTHER_ITEM),
     )
+
+
+_OPS: dict[str, Callable[..., mg.Operation]] = {
+    "sup": lambda a, b: AddRelation(a, RelationType.SUPERSEDES, b),
+    "unsup": lambda a, b: mg.RemoveRelation(a, RelationType.SUPERSEDES, b),
+    "dep": lambda a, b: mg.DeprecateItem(a, superseded_by=b),
+    "item": lambda a: mg.CreateItem(a, KnowledgeKind.ARCHITECTURE, "backend", "o"),
+    "alias": mg.AddAlias,
+    "unalias": mg.RemoveAlias,
+}
+_LOOP = ("sup a x; alias x a",)
+_ALIAS_CYCLES = [
+    ("sup a b; sup b x; alias x a",),
+    ("sup a b; sup b x", "alias x a"),
+    _LOOP,
+    ("item a; sup a b; dep a x; alias x b",),
+    ("sup a b; sup b x; alias x c", "unalias x; alias x a"),
+    ("sup y x; alias y a; alias x y",),
+]
+
+
+def _apply_steps(lock: Path, tmp_path: Path, steps: tuple[str, ...]) -> None:
+    def op(text: str) -> mg.Operation:
+        kind, *ids = text.split()
+        return _OPS[kind](*map(ItemId, ids))
+
+    ops = [tuple(op(t) for t in step.split(";")) for step in steps]
+    migrations = tuple(
+        Migration(
+            MigrationId(f"01K1AAAAAA{i}1234567890ABCDE"), NOW, "e", o, ContentHash.of_text(f"{i}")
+        )
+        for i, o in enumerate(ops)
+    )
+    _apply(tmp_path / "s.sqlite", lock, MigrationSet.ordered(migrations))
+
+
+_IDS = ["source alias", "later alias", "self-loop", "supersededBy alias", "retarget", "chain"]
+
+
+@pytest.mark.parametrize("steps", _ALIAS_CYCLES, ids=_IDS)
+def test_a_cycle_closed_through_an_alias_is_refused(
+    tmp_path: Path, lock: Path, steps: tuple[str, ...]
+) -> None:
+    """INV-6 compares nodes and a served read resolves aliases: a literal-id guard applied these."""
+    with pytest.raises(RelationCycleError):
+        _apply_steps(lock, tmp_path, steps)
+
+
+def test_an_alias_self_loop_names_its_stored_row_and_alias(tmp_path: Path, lock: Path) -> None:
+    with pytest.raises(RelationCycleError, match=r"\): a supersedes x, alias x -> a$"):
+        _apply_steps(lock, tmp_path, _LOOP)
+
+
+def test_removing_the_row_the_message_lists_cures_the_cycle(tmp_path: Path, lock: Path) -> None:
+    _apply_steps(lock, tmp_path, (*_LOOP, "unsup a x"))
 
 
 def _plant_an_undecodable_relation(database: Path, lock: Path) -> None:
