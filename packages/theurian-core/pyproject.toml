@@ -34,7 +34,7 @@ classifiers = [
 dependencies = [
     "jsonschema==4.26.0",
     "pydantic==2.14.1",
-    "python-ulid==4.0.1",
+    "python-ulid==4.1.0",
     "pyyaml==6.0.3",
     # jsonschema's public reference-resolution API, imported directly for the
     # no-network registry that keeps the installed migration schema offline
