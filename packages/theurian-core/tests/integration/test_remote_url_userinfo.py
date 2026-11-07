@@ -1,6 +1,7 @@
 """#1061: ``repository_url`` is the one value every recorded copy of the remote comes from
 (``project register``/``list`` output, ``projects.json``, the state ``projects`` row and the
-ingest anchor), so a credential embedded in origin must not survive it.
+ingest anchor), so a credential in origin's userinfo must not survive it. Only the userinfo is
+stripped: a token in ``?query`` or in an ``ext::`` command line is kept by design.
 """
 
 from __future__ import annotations
@@ -8,11 +9,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import sqlite3
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from git_isolation_fixtures import git, new_repo
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
@@ -46,6 +47,10 @@ CHANGES = [
         f"persistent-https::https://{HOST}/r",
     ),
     (f"ssh://alice:{TOKEN}@{HOST}/r.git", f"ssh://{HOST}/r.git"),
+    (f"git+ssh://alice:{TOKEN}@{HOST}/r", f"git+ssh://{HOST}/r"),
+    (f"ssh+git://alice:{TOKEN}@{HOST}/r", f"ssh+git://{HOST}/r"),
+    (f"ssh://git@x:{TOKEN}@{HOST}/r", f"ssh://{HOST}/r"),
+    (f"X2.Y+Z::https://alice:{TOKEN}@{HOST}/r", f"X2.Y+Z::https://{HOST}/r"),
 ]
 
 #: Forms without a secret in the userinfo slot: each must come back byte-identical.
@@ -53,6 +58,9 @@ UNCHANGED = [
     f"ssh://git@{HOST}/o/r.git",
     f"ssh://git@{HOST}:2222/o/r.git",
     f"git+ssh://git@{HOST}/o/r.git",
+    f"ssh+git://git@{HOST}/r",
+    f"https://{HOST}?a@b",
+    f"https://{HOST}#a@b",
     f"SSH://git@{HOST}/o/r.git",
     f"git@{HOST}:o/r.git",
     f"https://{HOST}/r.git",
@@ -98,19 +106,36 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``child_environment`` strips ``GIT_*`` from the spawn, so only ``HOME`` and
+    ``XDG_CONFIG_HOME`` keep the runner's own gitconfig out of ``repository_url``."""
+    home = tmp_path / "home"
+    xdg = tmp_path / "xdg"
+    home.mkdir()
+    xdg.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     for who in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{who}_DATE", "2026-01-01T00:00:00+00:00")
+    return home
 
 
 def _repo(path: Path, url: str) -> Path:
     repo = new_repo(path)
-    git(repo, "remote", "add", "origin", "https://placeholder.invalid/p.git")
     git(repo, "config", "remote.origin.url", url)
     return repo
+
+
+def _as_git_resolves(repo: Path, home: Path) -> str:
+    out = git(
+        repo,
+        "remote",
+        "get-url",
+        "origin",
+        extra_env={"GIT_CONFIG_GLOBAL": str(home / ".gitconfig")},
+    )
+    return out.removesuffix("\n")
 
 
 @pytest.mark.parametrize(("stored", "expected"), CHANGES)
@@ -131,11 +156,24 @@ def test_a_remote_url_without_a_secret_is_recorded_byte_for_byte(
     assert repository_url(repo) == stored
 
 
+def test_a_credential_injected_by_insteadof_is_not_recorded(tmp_path: Path, _home: Path) -> None:
+    """``git remote get-url`` expands ``url.<base>.insteadOf``, so the credential never appears in
+    the stored value; the positive control proves git hands it to ``repository_url``."""
+    (_home / ".gitconfig").write_text(
+        f'[url "https://x-access-token:{TOKEN}@{HOST}/"]\n\tinsteadOf = https://{HOST}/\n'
+    )
+    repo = _repo(tmp_path / "r", f"https://{HOST}/r.git")
+
+    assert _as_git_resolves(repo, _home) == f"https://x-access-token:{TOKEN}@{HOST}/r.git"
+    assert repository_url(repo) == f"https://{HOST}/r.git"
+
+
 def _cli(monkeypatch: pytest.MonkeyPatch, root: Path, data: Path, *words: str) -> tuple[str, int]:
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(data))
     monkeypatch.chdir(root)
     result = runner.invoke(app, [*words, "--json"], catch_exceptions=False)
-    return (result.stdout or result.stderr), result.exit_code
+    stream = result.stdout if result.exit_code == 0 else (result.stderr or result.stdout)
+    return stream, result.exit_code
 
 
 def _prepare(
@@ -146,8 +184,7 @@ def _prepare(
     _cli(monkeypatch, root, data, "init")
     (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(BODY)
     (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(MIGRATION)
-    git(root, "add", "-A")
-    git(root, "commit", "-q", "-m", "migrations")
+    commit_migrations(root, "migrations")
     return root, data
 
 
@@ -219,14 +256,16 @@ def test_a_credential_in_origin_reaches_no_recorded_copy(
 def test_the_next_apply_and_register_heal_a_record_written_with_the_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A project registered by the old code must not keep its token once the fix runs."""
     raw = f"https://alice:{TOKEN}@{HOST}/r.git"
     root, data = _prepare(monkeypatch, tmp_path, "old", raw)
     with monkeypatch.context() as old:
         old.setattr(commands, "repository_url", lambda _root: raw)
-        _cli(monkeypatch, root, data, "project", "register")
-        _cli(monkeypatch, root, data, "migrate", "apply")
+        _, code = _cli(monkeypatch, root, data, "project", "register")
+        assert code == 0
+        _, code = _cli(monkeypatch, root, data, "migrate", "apply")
+        assert code == 0
     assert TOKEN in _state_row(root)["repository_url"]
+    assert TOKEN in (data / "projects.json").read_text()
 
     _, code = _cli(monkeypatch, root, data, "migrate", "apply")
     assert code == 0
@@ -237,15 +276,9 @@ def test_the_next_apply_and_register_heal_a_record_written_with_the_credential(
     assert TOKEN not in (data / "projects.json").read_text()
 
 
-def test_git_stores_the_forms_this_file_drives(tmp_path: Path) -> None:
-    """Guards the fixture: every row above reached git unchanged, not a normalised form."""
-    for i, (stored, _) in enumerate(CHANGES):
+def test_git_returns_every_table_row_as_stored(tmp_path: Path, _home: Path) -> None:
+    """Guards both tables: git's own view of origin is the stored form, not a normalised one."""
+    for i, stored in enumerate([*(row for row, _ in CHANGES), *UNCHANGED]):
         repo = _repo(tmp_path / f"c{i}", stored)
-        out = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],  # noqa: S607
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        assert out == stored + "\n"
+
+        assert _as_git_resolves(repo, _home) == stored
