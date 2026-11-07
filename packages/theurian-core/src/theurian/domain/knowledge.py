@@ -466,7 +466,6 @@ class KnowledgeRelation:
             note=self.note,
         )
 
-    @property
     def must_be_acyclic(self) -> bool:
         """Whether a cycle through this relation type is a violation (INV-6)."""
         return self.relation_type in ACYCLIC_RELATIONS

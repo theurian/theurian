@@ -48,6 +48,34 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Changed
 
+- **BREAKING — `SCHEMA_VERSION` 4 → 5, and `migrate apply` refuses a migration
+  set whose knowledge relations close a `supersedes` or `depends_on` cycle**
+  ([#1033](https://github.com/theurian/theurian/issues/1033); INV-6, ADR-0040
+  decisions 4 and 5). Two refusals; `apiVersion`, `protocolVersion` and
+  `MIGRATION_ENGINE_VERSION` do not move.
+  - **A state database written at schema version 4 is refused at open.**
+    `knowledge.search`, `knowledge.get` and `knowledge.status` refuse it with
+    "`<database>` was written at schema version 4, but this build uses 5. State
+    databases are derived; rebuild with `theurian migrate apply` rather than
+    migrating this file.", and one `theurian migrate apply` rebuilds it under a
+    new state hash. Nothing authored is lost.
+  - **`migrate apply` refuses a relation cycle with `RelationCycleError`**,
+    exit 4, naming the relation type and the cycle's item ids. Old shape:
+    applied. A stored `superseded_by` row counts as the inverse `supersedes`
+    row; a loop mixing the two graphs is not refused. The check reads every
+    relation row the apply leaves, on every apply, including one with nothing
+    pending, so a corpus a previous Core applied with a cycle is refused at its
+    first apply under this one, which publishes no state for it until the cycle is
+    broken. The cure is a new migration in `.theurian/migrations/` whose
+    `removeRelation` breaks it, as the remedy says; `propose accept` refuses
+    that migration as a proposal while the landed set holds the cycle.
+    `migrate validate` still reports such a set `valid`, with the refusal in
+    `permissiveMovesUnavailable`
+    ([#1056](https://github.com/theurian/theurian/issues/1056));
+    `theurian propose`, `propose accept` and `okf import` refuse where they
+    replay it (ADR-0040 decision 5).
+    Ids the alias map connects count as one item: a cycle an alias closes is refused, as is a
+    rename whose `supersededBy` names its successor; remove the `supersedes` row it wrote.
 - For remedy parsers: the race remedy prints `expectedRevision: <rev>`,
   on the content route `--expected-revision <rev>` and, when the landed
   writer of `<rev>` replays after the proposal,

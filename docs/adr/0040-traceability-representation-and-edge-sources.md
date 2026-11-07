@@ -31,7 +31,9 @@ at `5ad30799`.** Source paths are relative to
 `.theurian/` are from the repository root. Each count names its key, run at
 `5ad30799`, and is marked *dated* — a measurement #1033–#1035 are expected to
 move — or *standing* — an invariant this record rests on, so a change that moves
-it must move this record too.
+it must move this record too. Line cites outside *Context* were re-measured in
+#1033's schema-v5 pull request ([#1059](https://github.com/theurian/theurian/pull/1059));
+*Context*'s are as measured at `5ad30799`.
 
 **Records this decision moves.** Decision 3 narrows ADR-0038 decision 2, which
 required a spec id named by an edge source to be resolved to its item id when
@@ -338,7 +340,7 @@ held below or recorded outside the claim:
   determinism tests become.
 - A commit message that is not UTF-8 is contained to its own record (#496) and
   reported by its sha only, so 3(a)'s "never echoed" holds; ADR-0029's reader
-  keeps up to 120 bytes of it (`trailer_source.py:205`, `:453`). A path git
+  keeps up to 120 bytes of it (`trailer_source.py:182`, `:423`). A path git
   emits that is not UTF-8 is not collected.
 - An edge's id and `created_at` derive from its commit — the sha, the path and
   the item id; the committer date — never from the engine's clock or an id
@@ -347,10 +349,10 @@ held below or recorded outside the claim:
   clones and prints a filesystem path for a local remote — an operator's
   layout, the class GHSA-923w-f36f-jcfq closed in MCP error responses.
 - A failure to read `HEAD`, a walk that fails or outlives the 30-second
-  subprocess timeout (`infrastructure/git/trailer_source.py:118`), and a stream
+  subprocess timeout (`infrastructure/git/trailer_source.py:95`), and a stream
   the framing cannot read refuse the build. None of them degrades to "no
   edges", because then one identity would name two edge sets. `current_commit`
-  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:81-93`),
+  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:89-102`),
   so the collector reads `HEAD` through a call that tells the two apart.
 
 **What git emits to the walk is bounded by recorded constants:** at most 10,000
@@ -381,8 +383,8 @@ prints 0). In a merge workflow a side-branch commit's trailer is collected only
 when the merge commit's message carries it (*Negative*).
 
 **The collector never discovers a repository.** `apply_migration_set` takes the
-root the composition root resolved (`find_git_root`, `cli/context.py:59`,
-`:246`) or None. None collects nothing and records the walk commit and the
+root the composition root resolved (`find_git_root`, `cli/context.py:61`,
+`:257`) or None. None collects nothing and records the walk commit and the
 boundary as null, as an unborn `HEAD` does; a trace then reports a null commit
 and zero edges walked. With a root, every read names it (`--git-dir`), or the
 collector refuses unless `rev-parse --show-toplevel` equals it. The rehearsal
@@ -392,9 +394,11 @@ comment is #1033's to restate.
 
 **On a shallow clone, the walk stops at the shallow boundary.** The shallow
 digest is the lowercase hex SHA-256 of the clone's shallow-commit list — the
-shas in the file `git rev-parse --git-path shallow` names, sorted byte-wise,
+lines of the file `git rev-parse --git-path shallow` names, sorted byte-wise,
 each followed by a newline — and null when no such file exists, which is a full
-clone. A commit the list names yields no edges: its parent is absent, so its
+clone. The build refuses unless every line is exactly one lowercase hex OID of
+the repository's hash length. A commit the list names yields no edges: its
+parent is absent, so its
 `C` record diffs it against the empty tree. In a depth-2 clone at `5ad30799` the
 boundary commit `54a9f673` lists 1,159 paths, its whole tree
 (`git ls-tree -r --name-only 54a9f673 | wc -l`), against the 2 the full history
@@ -403,6 +407,13 @@ The build reads the digest before the walk and again after it and refuses
 unless the two are equal, since `rev-list` and the log form each read the list
 again; a list rewritten and restored between the two reads passes, by
 construction, and is outside the identity claim above.
+
+> **Amended in Phase C, by [#1033](https://github.com/theurian/theurian/issues/1033).**
+> The derivation said "the shas in the file", which read as its
+> whitespace-separated tokens. Git reads the file one OID per line, so one
+> line holding two OIDs and two lines holding one each gave one token-wise
+> digest and two different walks (measured on #1036). The digest is over the
+> file's lines, and a line that is not exactly one OID refuses the build.
 
 **Not in `ingest` (F10), and not a new command:** either gives the state
 database a second writer whose run is optional, so whether a state held any
@@ -514,23 +525,60 @@ relation row of the project the apply leaves — whatever operation wrote it,
 `addRelation` or `deprecateItem`'s `supersededBy` (F2). A later `removeRelation`
 in the same set therefore cures an earlier cycle, and no applied document, which
 is frozen, ever needs editing. A refusal rolls the transaction back.
+Ids the alias map connects, through any chain, are one node, since `list_relations` resolves an
+alias first (`store.py:927-941`), so a rename whose `supersededBy` names its successor is refused.
 
 **The refusal is a new `RelationCycleError`, a `MigrationError`, not
 `MigrationCycleError`.** That one means a `dependsOn` cycle among migrations, so
-"no application order exists" (`domain/errors.py:113-119`); it carries migration
+"no application order exists" (`domain/errors.py:116-122`); it carries migration
 ids, and the CLI's remedy for it is "Break the dependency cycle shown above, then
 retry." (`cli/commands.py:767-768`). A relation cycle's cure is a new migration
 with a `removeRelation`, so the new error names the relation type and the
-cycle's item ids, and its remedy says that. It is raised by `migrate apply` and
-by the CLI's proposal-accept rehearsal; the MCP composition root wires the
-rehearsal to `_accept_is_unreachable` (`mcp/tools.py:1973`), so no MCP response
-carries it.
+cycle's item ids, and its remedy says that. The guard is in the engine, so the
+error reaches every CLI site that replays a set: the first key below prints
+six wiring sites, five of them reachable, and each surfaces the error its own
+way:
+
+- `migrate apply`: the error and its own remedy, exit 4;
+- `migrate validate`: the error text in `permissiveMovesUnavailable`, with
+  `valid` still true — ADR-0027 decision 2's recorded design, which
+  [#1056](https://github.com/theurian/theurian/issues/1056) re-decides;
+- `theurian propose`, for an item the set creates, and `propose accept`: the
+  error text inside their own refusal, whose remedy names `migrate apply` when
+  the landed set holds the cycle, and the proposal's file when its own
+  relations close it;
+- `okf import`, for an item the set creates: the T-25 refusal literal, which
+  names only the class of the proposal service's refusal, `ProposalError`.
+
+The sixth, `okf_commands.py:382`'s rehearsal, is unreachable: `okf import`
+holds its service through `DraftOnlyProposals`, whose `__slots__` are the two
+draft entries, and of `ProposalService`'s public methods only `accept` reaches
+`self._rehearse`. The MCP composition root wires the rehearsal to
+`_accept_is_unreachable` (`mcp/tools.py:1973`), so no MCP response carries it.
+
+```sh
+# the six wiring sites; 9 lines without the ':!' exclusion
+git grep -n -P '\b(apply_migration_set|rehearse_migration_set|current_item_in|permissive_moves_in)\(' -- packages/theurian-core/src/theurian/cli ':!packages/theurian-core/src/theurian/cli/migration_pipeline.py' | grep -v -E ':[0-9]+:\s*(#|def )'
+# what `okf import` holds, then the public methods reaching the rehearsal:
+# ['accept'] from _rehearse, and ['accept', 'draft'] from _current_item
+grep -n '__slots__' packages/theurian-core/src/theurian/application/draft_only_proposals.py
+python3 -I - packages/theurian-core/src/theurian/application/proposal_service.py _rehearse <<'EOF'
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+cls = next(n for n in tree.body if getattr(n, "name", "") == "ProposalService")
+uses = {f.name: {a.attr for a in ast.walk(f) if isinstance(a, ast.Attribute) and getattr(a.value, "id", "") == "self"} for f in cls.body if isinstance(f, ast.FunctionDef)}
+reach = {sys.argv[2]}
+for _ in uses:
+    reach |= {name for name, used in uses.items() if used & reach}
+print(sorted(name for name in reach if not name.startswith("_")))
+EOF
+```
 
 **What an existing cyclic corpus meets.** The dogfood corpus meets nothing: it
 holds no relation row (F2). Corpora in other repositories cannot be measured
 from here. One with a cycle meets `RelationCycleError` at its first apply under
 the enforcing Core, naming the cycle; until a migration removes a relation of
-it, that Core builds no state for the project.
+it, that Core publishes no state for the project.
 
 **No `apiVersion`, `protocolVersion` or `MIGRATION_ENGINE_VERSION` bump.**
 ADR-0039 decision 6 sends a change that "moves which rows a gate reads", relation
@@ -566,7 +614,7 @@ built by an enforcing Core.** A state a non-enforcing Core built is v4: the
 enforcing Core refuses it at open (`_assert_schema_version`,
 `infrastructure/sqlite/connection.py:1083-1089`) and names another database for
 the project, since `SCHEMA_VERSION` is a state-hash input
-(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:262`,
+(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:273`,
 `cli/migration_pipeline.py:209`, `:362`), which only the enforcing apply builds.
 
 ### 6. The per-hop visibility gate
@@ -596,7 +644,7 @@ above, and judged on `may_surface` and `may_disclose`:
 - **A missing endpoint is withheld,** exactly as a withheld one is.
 - **The read is scoped by the edge's `project_id`.** Edges are listed by the
   request's project — both edge indexes lead with `project_id`
-  (`schema.py:400-401`) — and each endpoint is read in the edge row's
+  (`schema.py:425-426`) — and each endpoint is read in the edge row's
   `project_id`, which that listing makes the request's. A `TraceNode` carries no
   project, so the edge row is the only thing that can scope the read.
   [#845](https://github.com/theurian/theurian/issues/845)'s M-4, the gate's
@@ -833,6 +881,20 @@ Rests on enforcement that already holds:
   decision 2's environment is #1012's (`342ea607`).
 - **`_closed_value`**, the parse decision 8 requires.
 
+Landed from item 1 below in #1033's schema-v5 pull request
+([#1059](https://github.com/theurian/theurian/pull/1059)):
+
+- **`SCHEMA_VERSION` 5 and decision 4's columns**: `test_the_schema_version_is_five`,
+  `test_schema_metadata_has_the_walk_record_columns`,
+  `test_traceability_edges_has_a_source_commit_column`;
+- **decision 5's guard, called from `MigrationEngine.apply`**:
+  `test_must_be_acyclic_has_one_caller_under_src`, and the RED drivers
+  `test_a_v4_state_holding_a_supersession_cycle_is_refused_and_its_rebuild_raises`
+  and `test_an_apply_with_nothing_pending_refuses_a_planted_cycle_and_publishes_nothing`;
+- **the two-way open**:
+  `test_a_database_of_the_other_version_is_refused_before_any_row_is_decoded`;
+- **the BREAKING CHANGELOG entry, and FR-K8 restated.**
+
 Still owed, with the issue or slice that will satisfy it:
 
 1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
@@ -872,9 +934,20 @@ Still owed, with the issue or slice that will satisfy it:
    rolls back and keeps serving it), never later (a Core built between them
    serves a v5 state no guard checked, and a rule that no core-v* tag sits
    between them leans on release ordering, which this ADR rejects). Check:
-   `git log -S` for the `SCHEMA_VERSION` 5 line and for `RelationCycleError`
-   name the same sha. A later revert or cherry-pick that moves one without the
-   other is outside the condition. Its pull request also carries a
+   these three each print one sha, the same one: on the branch the commit that
+   bumps the version, on `main` the squash commit.
+
+   ```sh
+   git log -S'SCHEMA_VERSION: Final = 5' --format=%H -- packages/theurian-core/src/theurian/infrastructure/sqlite/schema.py
+   git log -S'.must_be_acyclic(' --format=%H -- packages/theurian-core/src
+   git log -S'class RelationCycleError' --format=%H -- packages/theurian-core/src
+   ```
+
+   Their positive control, `-G'^SCHEMA_VERSION: Final = '` over the same file,
+   lists every commit that changed the version line, newest first; before #1033
+   its first is the 3 → 4 bump, `7d7195b0`. A later revert or cherry-pick that
+   moves one without the other is outside the condition. Its pull request also
+   carries a
    **BREAKING** CHANGELOG entry naming the refusal; FR-K8's "a no-op, not an
    error" (`docs/architecture/requirements-analysis.md:38`), restated as scope
    over applied sets, since under the condition a cyclic set is never applied;

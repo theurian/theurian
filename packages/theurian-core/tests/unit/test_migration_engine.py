@@ -1,8 +1,10 @@
 """Migration engine guarantees (ADR-0005, ADR-0006).
 
 The four properties that make the canonical store trustworthy: an applied
-migration is frozen, conflicts are reported rather than merged, re-application
-is a no-op, and ordering is deterministic.
+migration is frozen, conflicts are reported rather than merged, re-applying an
+applied migration applies none of its operations again, and ordering is
+deterministic. Every apply also runs INV-6's guard over the relations the
+project holds (ADR-0040 decision 5).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from theurian.application.migration_engine import (
     verify_no_applied_migration_changed,
     verify_no_applied_migration_removed,
 )
+from theurian.application.migration_relation_guards import refuse_relation_cycles
 from theurian.domain.enums import (
     KnowledgeKind,
     KnowledgeStatus,
@@ -43,11 +46,12 @@ from theurian.domain.errors import (
     MigrationDependencyMissingError,
     MigrationError,
     MigrationHistoryMissingError,
+    RelationCycleError,
     RevisionConflictError,
     UnenforceableScopeError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
-from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.knowledge import KnowledgeRelation, SourceAnchor
 from theurian.domain.migration import (
     AddAlias,
     AddRelation,
@@ -56,6 +60,7 @@ from theurian.domain.migration import (
     DeprecateItem,
     Migration,
     MigrationSet,
+    RemoveRelation,
     RestoreItem,
     RevisionMetadataSpec,
     UpsertRevision,
@@ -971,6 +976,121 @@ def test_relations_are_deduplicated() -> None:
 
     matching = [r for r in writer.relations if r.target_item_id == target]
     assert len(matching) == 1
+
+
+# -- INV-6: the relation set an apply leaves (ADR-0040 decision 5) ----------
+#
+# No length-1 case: `KnowledgeRelation` refuses a self-relation at construction
+# (`test_self_relation_is_rejected`) and `knowledge_relations` CHECKs it too.
+
+SUCCESSOR = ItemId("architecture.auth-policy-v2")
+SUPERSEDES, SUPERSEDED_BY, DEPENDS_ON = (
+    RelationType.SUPERSEDES,
+    RelationType.SUPERSEDED_BY,
+    RelationType.DEPENDS_ON,
+)
+
+
+def _add(source: ItemId, kind: RelationType, target: ItemId) -> AddRelation:
+    return AddRelation(source_item_id=source, relation_type=kind, target_item_id=target)
+
+
+def _apply_after_the_item(*migrations: tuple[object, ...]) -> InMemoryWriter:
+    writer = InMemoryWriter()
+    pending = (
+        _create_and_upsert(MIG_1, REV_1, BODY_V1),
+        *(_migration(m, *ops) for m, ops in zip((MIG_2, MIG_3), migrations, strict=False)),
+    )
+    _engine(BODY_V1).apply(writer, PROJECT, MigrationSet.ordered(pending))
+    return writer
+
+
+@pytest.mark.parametrize(
+    ("operations", "graph"),
+    [
+        pytest.param(
+            (_add(ITEM, SUPERSEDES, SUCCESSOR), _add(ITEM, SUPERSEDED_BY, SUCCESSOR)),
+            SUPERSEDES,
+            id="the two stored directions of supersession",
+        ),
+        pytest.param(
+            (_add(ITEM, DEPENDS_ON, SUCCESSOR), _add(SUCCESSOR, DEPENDS_ON, ITEM)),
+            DEPENDS_ON,
+            id="depends_on",
+        ),
+        pytest.param(
+            (
+                DeprecateItem(item_id=ITEM, superseded_by=SUCCESSOR),
+                _add(ITEM, SUPERSEDES, SUCCESSOR),
+            ),
+            SUPERSEDES,
+            id="through deprecateItem.supersededBy",
+        ),
+    ],
+)
+def test_an_apply_leaving_a_cycle_inv_6_forbids_is_refused(
+    operations: tuple[object, ...], graph: RelationType
+) -> None:
+    with pytest.raises(RelationCycleError) as refused:
+        _apply_after_the_item(operations)
+
+    assert (refused.value.relation_type, refused.value.cycle) == (graph, (ITEM, SUCCESSOR))
+
+
+@pytest.mark.parametrize(
+    ("migrations", "left"),
+    [
+        pytest.param(
+            ((_add(ITEM, SUPERSEDES, SUCCESSOR), _add(SUCCESSOR, DEPENDS_ON, ITEM)),),
+            {(ITEM, SUPERSEDES, SUCCESSOR), (SUCCESSOR, DEPENDS_ON, ITEM)},
+            id="a loop mixing the two graphs",
+        ),
+        pytest.param(
+            (
+                (_add(ITEM, DEPENDS_ON, SUCCESSOR), _add(SUCCESSOR, DEPENDS_ON, ITEM)),
+                (
+                    RemoveRelation(
+                        source_item_id=SUCCESSOR, relation_type=DEPENDS_ON, target_item_id=ITEM
+                    ),
+                ),
+            ),
+            {(ITEM, DEPENDS_ON, SUCCESSOR)},
+            id="a later migration's removeRelation",
+        ),
+    ],
+)
+def test_an_apply_leaving_no_forbidden_cycle_is_not_refused(
+    migrations: tuple[tuple[object, ...], ...], left: set[tuple[ItemId, RelationType, ItemId]]
+) -> None:
+    """A mixed loop breaks neither reason `ACYCLIC_RELATIONS` records, and the guard
+    reads the set after every pending migration, so a later one can cure a cycle."""
+    writer = _apply_after_the_item(*migrations)
+
+    assert {(r.source_item_id, r.relation_type, r.target_item_id) for r in writer.relations} == left
+
+
+def test_the_reported_cycle_does_not_depend_on_the_order_relations_arrive_in() -> None:
+    """Graphs, starts and successors are each visited sorted, and this set offers a
+    choice at every one: two graphs, dependency cycles from two starts (`m`, `x`),
+    and two successors at the first start (`n`, `p`) and at the next node (`m`, `q`)."""
+    edges = [("m", "n"), ("m", "p"), ("n", "m"), ("n", "q"), ("p", "m"), ("q", "m")]
+    relations = [
+        KnowledgeRelation(PROJECT, ItemId(source), kind, ItemId(target), NOW)
+        for kind, pairs in (
+            (DEPENDS_ON, [*edges, ("x", "y"), ("y", "x")]),
+            (SUPERSEDES, [("a", "b"), ("b", "a")]),
+        )
+        for source, target in pairs
+    ]
+    orders = [relations[i:] + relations[:i] for i in range(len(relations))]
+
+    verdicts = set()
+    for order in [*orders, *(order[::-1] for order in orders)]:
+        with pytest.raises(RelationCycleError) as refused:
+            refuse_relation_cycles(order)
+        verdicts.add((refused.value.relation_type, refused.value.cycle))
+
+    assert verdicts == {(DEPENDS_ON, (ItemId("m"), ItemId("n")))}
 
 
 # -- Planning --------------------------------------------------------------
