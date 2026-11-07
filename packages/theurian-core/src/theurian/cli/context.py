@@ -123,12 +123,12 @@ def default_branch(root: Path) -> str:
     return _line(result.stdout) or "main"
 
 
-# Not urllib.parse.urlsplit: `hostname` lowercases the host, `urlunsplit` drops
-# \t\r\n and leading whitespace (undoing the byte-exact read pinned by
-# test_a_remote_url_with_trailing_whitespace_is_reported_as_stored), and it
-# raises ValueError on `[::1` and on port `:99999`. A bare ssh username is a
-# login name, not a credential, so it stays; scp-like `user@host:path` has no
-# scheme and never matches.
+# Not urllib.parse.urlsplit: it removes \t\r\n anywhere in the URL and strips
+# leading whitespace, undoing the byte-exact read pinned by
+# test_a_remote_url_with_trailing_whitespace_is_reported_as_stored, and it
+# raises ValueError on `[::1`. A bare ssh username is a login name, not a
+# credential, so it stays; scp-like `user@host:path` has no scheme and never
+# matches.
 _AUTHORITY_USERINFO = re.compile(
     r"^(?P<prefix>(?:[A-Za-z0-9+.-]+::)?(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://)(?P<userinfo>[^/?#]*)@"
 )
