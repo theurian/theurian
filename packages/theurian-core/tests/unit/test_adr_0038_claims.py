@@ -97,6 +97,13 @@ ADR_STATES: Final[dict[str, str]] = {
     "edges-unbuilt": """`traceability_edges` is declared in `schema.py`, and
         `CanonicalStore.add_traceability_edge` and `list_traceability_edges` are declared on
         `domain/ports/canonical_store.py` with no implementation and no caller.""",
+    # Amendment 3's blockquote: its `>` markers are part of the collapsed text.
+    "edges-implemented": """"No
+        > implementation" was true when measured and is not now:
+        > [#1033](https://github.com/theurian/theurian/issues/1033) implements both on
+        > SQLite, as `SqliteWriter.add_traceability_edge` and
+        > `SqliteCanonicalStore.list_traceability_edges` in
+        > `infrastructure/sqlite/store.py`""",
     "reference": """**The entity is a reference from a knowledge item to a separate document,
         pinned at one revision of that item.**""",
     "registration": """`application/migration_engine.py`'s `_register_specification` looks up
