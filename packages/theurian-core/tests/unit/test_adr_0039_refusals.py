@@ -69,6 +69,7 @@ from theurian.infrastructure.sqlite.connection import (
 )
 from theurian.infrastructure.sqlite.store import (
     SqliteCanonicalStore,
+    _edge_from_row,
     _item_from_row,
     _reading,
     _relation_from_row,
@@ -408,6 +409,22 @@ def _relation_row() -> dict[str, object]:
     }
 
 
+def _edge_row() -> dict[str, object]:
+    return {
+        "edge_id": "01K1DEFEDG01234567890ABCDE",
+        "project_id": "demo",
+        "source_type": "code",
+        "source_id": "services/auth/token.py",
+        "relation_type": "related_to",
+        "target_type": "knowledge",
+        "target_id": "domain.example",
+        "evidence": "[]",
+        "confidence": 0.5,
+        "created_at": "2026-09-30T00:00:00+00:00",
+        "source_commit": "c" * 40,
+    }
+
+
 def _revision_row() -> dict[str, object]:
     fixture = revision()
     return {
@@ -428,8 +445,8 @@ def _revision_row() -> dict[str, object]:
     }
 
 
-#: Each decoder the ADR's store row names, plus the three wire-enumerated columns decision
-#: 8 says ``_item_from_row`` decodes: (decode, a valid row, column, planted, enum).
+#: Each decoder the ADR's store row and its Amendment 2 name, plus the three wire-enumerated
+#: columns decision 8 says ``_item_from_row`` decodes: (decode, a valid row, column, planted, enum).
 _DECODERS: Final[
     dict[str, tuple[Callable[[Any], object], Callable[[], dict[str, object]], str, str, type]]
 ] = {
@@ -445,6 +462,7 @@ _DECODERS: Final[
         KnowledgeKind,
     ),
     "relation": (_relation_from_row, _relation_row, "relation_type", "traces_to", RelationType),
+    "edge": (_edge_from_row, _edge_row, "relation_type", "traces_to", RelationType),
 }
 
 
@@ -494,9 +512,9 @@ def test_every_store_read_decodes_its_row_inside_the_reading_guard() -> None:
         for name in ("_read_one", "_read_all")
     }
 
-    assert {"_item_from_row", "_revision_from_row", "_relation_from_row"} <= {
+    assert {"_item_from_row", "_revision_from_row", "_relation_from_row", "_edge_from_row"} <= {
         node.id for node in references
-    }, "positive control: the key no longer sees the three decoders the ADR names"
+    }, "positive control: the key no longer sees the four decoders the ADR names"
     assert [node.lineno for node in references if id(node) not in guarded] == []
     for name, reader in readers.items():
         [block] = [node for node in ast.walk(reader) if isinstance(node, ast.With)]
