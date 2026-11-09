@@ -1205,7 +1205,7 @@ def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path)
 def test_an_edge_filter_matches_the_literal_knowledge_id_and_resolves_no_alias(
     database: Path, lock: Path
 ) -> None:
-    """ADR-0040 decision 4: "Collection resolves no alias" (:475). Resolution is #1034's
+    """ADR-0040 decision 3: "Collection resolves no alias" (:475). Resolution is #1034's
     reachability step (:625-627); a store that resolved here would answer for it."""
     old = ItemId("architecture.old-auth")
     into = TraceabilityEdge(
