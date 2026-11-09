@@ -1645,8 +1645,8 @@ class SqliteWriter:
 # module-level rather than inlined as lambdas so that the guard's coverage is a
 # property of *where they are called* -- a set small enough to read through,
 # but not the "one place each" this comment used to claim:
-# `grep -E '_from_row' store.py | grep -v '^#' | grep -vc '^def '` is 25 over
-# eleven mappers, and eight of the eleven are reached from more than one place
+# `grep -E '_from_row' store.py | grep -v '^#' | grep -vc '^def '` is 26 over
+# eleven mappers, and nine of the eleven are reached from more than one place
 # (`grep -v '^#' store.py | grep -oE '_[a-z_]+_from_row' | sort | uniq -c`,
 # where a mapper reached once shows 2 -- its own `def` line and that one
 # reference). `_item_from_row` is reached from `get_item`, `list_items` and
