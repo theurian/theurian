@@ -23,7 +23,7 @@ dev = [
     "pytest==9.2.0",
     "ruff==0.17.3",
     "types-jsonschema==4.26.0.20261006",
-    "types-pyyaml==6.0.12.20261030",
+    "types-pyyaml==6.0.12.20261103",
     # `[all]` so a single `uv sync` at the repo root gives contributors the
     # daemon, vector, and telemetry extras that the full test suite exercises.
     "theurian[all]",
