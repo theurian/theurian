@@ -1159,7 +1159,7 @@ def test_an_alias_resolves_to_its_item(database: Path, lock: Path) -> None:
     assert resolved.item_id == ITEM
 
 
-# -- ADR-0040 decision 4: traceability edges and the walk record ------------
+# -- ADR-0040 decisions 3 and 4: traceability edges and the walk record -----
 
 
 def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path) -> None:

@@ -4,7 +4,7 @@ ADR-0040 ships no code, so each sentence it states about the repository was
 measured once, at ``5ad30799``. A *fact* pin recomputes it from live source or
 schema and goes RED when the tree moves; a *prose* pin goes RED when the record
 drifts. A dated fact's failure message names #1033 or #1034 and the sentence to
-update; a standing one, the sentence it holds.
+update; one standing since #1033, the sentence it holds.
 
 **Reach.** Each key, beside the claim it holds:
 
@@ -25,7 +25,7 @@ update; a standing one, the sentence it holds.
 - *Adapters of the edge port* are source lines under ``src`` outside
   ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``,
   and the top-level classes of ``infrastructure/sqlite/store.py`` whose own body
-  defines a method by either name, read from the syntax tree.
+  has a ``def`` by either name, read from the syntax tree; an ``async def`` is not.
 - *Append-only* is ADR-0016 and ADR-0039 against ``5ad30799``: every base line
   survives in order, what follows the last one opens with a blank line and
   ``## Amendment 1`` and is not read further (ADR-0039's Amendment 2 is in it), and

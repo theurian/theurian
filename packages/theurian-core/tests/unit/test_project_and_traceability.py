@@ -805,7 +805,7 @@ def test_an_edge_is_measured_against_a_full_sha_1_or_sha_256_commit_id(commit: s
     ],
 )
 def test_an_edge_refuses_any_other_source_commit_without_echoing_it(commit: str) -> None:
-    """An exact message, so no part of the refused value can be in it."""
+    """One exact message for all nine values, so it varies with none of them."""
     with pytest.raises(InvariantViolationError) as refused:
         _edge(source_commit=commit)
 

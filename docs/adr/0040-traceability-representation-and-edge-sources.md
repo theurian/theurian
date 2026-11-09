@@ -906,7 +906,7 @@ calls yet.
   `RelationType`, one listed by its source and the other by its target; and
   `test_the_sqlite_store_is_the_one_adapter_of_the_edge_port`: outside
   `domain/ports/`, `infrastructure/sqlite/store.py` is the only source file
-  defining either method;
+  with a `def` of either method;
 - **decision 4's `source_commit`**:
   `test_an_edge_refuses_any_other_source_commit_without_echoing_it`, nine values
   that are not a full lowercase hex commit id, each refused with the same fixed
