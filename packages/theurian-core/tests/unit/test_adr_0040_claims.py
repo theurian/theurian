@@ -23,7 +23,9 @@ update; a standing one, the sentence it holds.
   function each call sits in, and the guard's own caller, are read as calls in
   the syntax tree.
 - *Adapters of the edge port* are source lines under ``src`` outside
-  ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``.
+  ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``,
+  and the top-level classes of ``infrastructure/sqlite/store.py`` whose own body
+  defines a method by either name, read from the syntax tree.
 - *Append-only* is ADR-0016 and ADR-0039 against ``5ad30799``: every base line
   survives in order, nothing follows the last one but ``Amendment 1``, and every
   run of lines inserted before it opens with ``*Amended in Amendment`` and is indented
@@ -248,7 +250,7 @@ def test_the_schema_bump_and_inv_6_enforcement_land_together() -> None:
     )
 
 
-# --- Fact pins: standing since #1033 (decisions 4 and 5) -----------------------
+# --- Fact pins: standing since #1033 (decisions 4 and 5, the edge adapter) ---
 
 STANDING: Final = "ADR-0040 {where} states {sentence!r}, and the tree no longer does."
 
@@ -316,9 +318,6 @@ def test_must_be_acyclic_has_one_caller_under_src() -> None:
     }, guard
 
 
-# --- Fact pins: dated --------------------------------------------------------
-
-
 _PORT_KEY: Final = re.compile(r"def (add_traceability_edge|list_traceability_edges)[(]")
 
 
@@ -331,14 +330,32 @@ def _port_definitions(root: Path) -> list[Path]:
 
 
 def test_the_sqlite_store_is_the_one_adapter_of_the_edge_port() -> None:
-    """The key without the exclusion finds the port itself, which is its positive control."""
+    """The key without the exclusion finds the port itself, which is its positive control.
+
+    Each method is named by its verb: ADR-0038 Amendment 3 says no file but the round-trip
+    test names either one, which ``test_adr_0038_populations.py`` holds over exact strings.
+    """
     everywhere = _port_definitions(SRC)
     adapters = [path for path in everywhere if "domain/ports/" not in path.as_posix()]
+    defined = {
+        (owner.name, method.name.partition("_")[0])
+        for owner in _trees()["infrastructure/sqlite/store.py"].body
+        if isinstance(owner, ast.ClassDef)
+        for method in owner.body
+        if isinstance(method, ast.FunctionDef) and _PORT_KEY.fullmatch(f"def {method.name}(")
+    }
+    adapter = STANDING.format(
+        where="Compliance",
+        sentence="Landed from item 1 below in #1033's edge-adapter pull request: the SQLite "
+        "adapter for both port methods",
+    )
 
     assert Path("domain/ports/canonical_store.py") in everywhere
-    assert adapters == [Path("infrastructure/sqlite/store.py")], DATED.format(
-        where="F5", issue=1033, sentence="F5's 'No adapter implements the edge port'"
-    )
+    assert adapters == [Path("infrastructure/sqlite/store.py")], adapter
+    assert defined == {("SqliteWriter", "add"), ("SqliteCanonicalStore", "list")}, adapter
+
+
+# --- Fact pins: dated --------------------------------------------------------
 
 
 _GIT_LOG_AND_STATE: Final = frozenset(
@@ -473,6 +490,11 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
         "build: 393 units in 200 files, read at every match (FR-K8's row is a second match). "
         "The 25 units it finds false are listed, file by file, under [#1033's Sentences this "
         "slice falsifies](https://github.com/theurian/theurian/issues/1033#sentences-this-slice-falsifies);",
+    ),
+    "the edge adapter's landing": (
+        "## Compliance",
+        "Landed from item 1 below in #1033's edge-adapter pull request: the SQLite adapter for "
+        "both port methods, which nothing under packages/theurian-core/src calls yet.",
     ),
 }
 
