@@ -898,9 +898,16 @@ packages/theurian-core/src/theurian/cli/propose_commands.py:152:        Knowledg
 > the loader's constructions, as at `f0e4d754`; the six construction sites
 > left are `okf_import.py:288`, `proposal_service.py:4074` and the store's
 > `:1769`, `:1795`, `:1872` and `:1884`, the last `_edge_from_row`'s. It meets
-> an unknown value as the row's three decoders do (read from source, not run):
+> an unknown value as the row's three decoders do:
 > `list_traceability_edges` hands it to `_read_all`, which maps every row inside
 > `_reading()`, and that re-raises its `ValueError` as
-> `StateDatabaseUnreadableError`, naming only the exception type. Nothing under
+> `StateDatabaseUnreadableError`, naming only the exception type.
+> `test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database[edge]`
+> decodes a row with an unknown `relation_type` inside `_reading()` and gets that
+> error, the value absent from its message;
+> `test_every_store_read_decodes_its_row_inside_the_reading_guard` holds every
+> bare-name reference to a decoder in `store.py` inside a `_reading()` block, a
+> `_read_one` or `_read_all` argument or a decoder's body, and both readers'
+> mapping inside `_reading()`. Nothing under
 > `packages/theurian-core/src` calls `list_traceability_edges` yet, and the
 > decoder's two `TraceNodeType` constructions are outside the key (Amendment 1).
