@@ -1,14 +1,17 @@
 """#1061: ``repository_url`` is the one value every recorded copy of the remote comes from
 (``project register``/``list`` output, ``projects.json``, the state ``projects`` row and the
 ingest anchor), so a credential in origin's userinfo must not survive it. Only the userinfo is
-stripped: a token in ``?query`` or in an ``ext::`` command line is kept by design.
+stripped: a token in ``?query`` is kept by design, and so is one in an ``ext::`` command line
+that does not begin with ``scheme://``.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sqlite3
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +22,11 @@ from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
 from theurian.application.ingestion_service import IngestionRequest, _anchor
-from theurian.cli import commands
+from theurian.cli import commands, context
 from theurian.cli.context import current_commit, repository_url
 from theurian.cli.main import app
+from theurian.infrastructure.git import environment
+from theurian.infrastructure.git.environment import child_environment
 
 pytestmark = pytest.mark.integration
 
@@ -51,6 +56,13 @@ CHANGES = [
     (f"ssh+git://alice:{TOKEN}@{HOST}/r", f"ssh+git://{HOST}/r"),
     (f"ssh://git@x:{TOKEN}@{HOST}/r", f"ssh://{HOST}/r"),
     (f"X2.Y+Z::https://alice:{TOKEN}@{HOST}/r", f"X2.Y+Z::https://{HOST}/r"),
+    (f"persistent-https://alice:{TOKEN}@{HOST}/r", f"persistent-https://{HOST}/r"),
+    (f"s3://AKIA:{TOKEN}@{HOST}/r", f"s3://{HOST}/r"),
+    (f"a.b://alice:{TOKEN}@{HOST}/r", f"a.b://{HOST}/r"),
+    (f"https://alice:pa ss{TOKEN}@{HOST}/r", f"https://{HOST}/r"),
+    (f"https://alice:p[{TOKEN}]@{HOST}/r", f"https://{HOST}/r"),
+    (f"sshx://ghp_{TOKEN}@{HOST}/r", f"sshx://{HOST}/r"),
+    (f"ext::https://alice:{TOKEN}@{HOST}/r", f"ext::https://{HOST}/r"),
 ]
 
 #: Forms without a secret in the userinfo slot: each must come back byte-identical.
@@ -70,6 +82,7 @@ UNCHANGED = [
     "/srv/git/r.git",
     "../r.git",
     "file:///srv/git/r.git",
+    f"ext::git-remote-x %S {TOKEN}",
 ]
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
@@ -107,14 +120,16 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """``child_environment`` strips ``GIT_*`` from the spawn, so only ``HOME`` and
-    ``XDG_CONFIG_HOME`` keep the runner's own gitconfig out of ``repository_url``."""
+    """``child_environment`` strips ``GIT_*`` from the spawn: ``HOME`` and ``XDG_CONFIG_HOME``
+    redirect the global scope, and the forced ``GIT_CONFIG_NOSYSTEM`` closes the system scope."""
     home = tmp_path / "home"
     xdg = tmp_path / "xdg"
     home.mkdir()
     xdg.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setitem(environment._FORCED, "GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     for who in ("AUTHOR", "COMMITTER"):
         monkeypatch.setenv(f"GIT_{who}_DATE", "2026-01-01T00:00:00+00:00")
@@ -127,14 +142,15 @@ def _repo(path: Path, url: str) -> Path:
     return repo
 
 
-def _as_git_resolves(repo: Path, home: Path) -> str:
-    out = git(
-        repo,
-        "remote",
-        "get-url",
-        "origin",
-        extra_env={"GIT_CONFIG_GLOBAL": str(home / ".gitconfig")},
-    )
+def _as_git_resolves(repo: Path) -> str:
+    out = subprocess.run(
+        ["git", "remote", "get-url", "origin"],  # noqa: S607 - resolved via PATH
+        cwd=repo,
+        env=child_environment(os.environ),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     return out.removesuffix("\n")
 
 
@@ -156,15 +172,21 @@ def test_a_remote_url_without_a_secret_is_recorded_byte_for_byte(
     assert repository_url(repo) == stored
 
 
-def test_a_credential_injected_by_insteadof_is_not_recorded(tmp_path: Path, _home: Path) -> None:
+def test_a_credential_injected_by_insteadof_is_not_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _home: Path
+) -> None:
     """``git remote get-url`` expands ``url.<base>.insteadOf``, so the credential never appears in
-    the stored value; the positive control proves git hands it to ``repository_url``."""
+    the stored value. With stripping disabled, ``repository_url`` returns it; with stripping
+    enabled, it does not."""
     (_home / ".gitconfig").write_text(
         f'[url "https://x-access-token:{TOKEN}@{HOST}/"]\n\tinsteadOf = https://{HOST}/\n'
     )
     repo = _repo(tmp_path / "r", f"https://{HOST}/r.git")
 
-    assert _as_git_resolves(repo, _home) == f"https://x-access-token:{TOKEN}@{HOST}/r.git"
+    with monkeypatch.context() as unstripped:
+        unstripped.setattr(context, "_without_userinfo", lambda url: url)
+        assert repository_url(repo) == f"https://x-access-token:{TOKEN}@{HOST}/r.git"
+
     assert repository_url(repo) == f"https://{HOST}/r.git"
 
 
@@ -276,9 +298,9 @@ def test_the_next_apply_and_register_heal_a_record_written_with_the_credential(
     assert TOKEN not in (data / "projects.json").read_text()
 
 
-def test_git_returns_every_table_row_as_stored(tmp_path: Path, _home: Path) -> None:
+def test_git_returns_every_table_row_as_stored(tmp_path: Path) -> None:
     """Guards both tables: git's own view of origin is the stored form, not a normalised one."""
     for i, stored in enumerate([*(row for row, _ in CHANGES), *UNCHANGED]):
         repo = _repo(tmp_path / f"c{i}", stored)
 
-        assert _as_git_resolves(repo, _home) == stored
+        assert _as_git_resolves(repo) == stored
