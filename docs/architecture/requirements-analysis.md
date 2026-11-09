@@ -35,7 +35,7 @@ Identifiers (`FR-*`) are stable and referenced from ADRs, tests, and issues.
 | FR-K5 | Detect a migration whose recorded checksum differs from its file checksum, and fail loudly. |
 | FR-K6 | Enforce optimistic concurrency via `expectedRevision`. |
 | FR-K7 | Order migrations by topological sort over `dependsOn`, and reject cycles. |
-| FR-K8 | Re-applying an already-applied migration is a no-op, not an error. |
+| FR-K8 | Re-applying an already-applied migration applies none of its operations again. Every apply still runs INV-6's guard over the relations the project holds (ADR-0040 decision 5), so the re-apply is an error only if they form a cycle, which no guarded apply leaves. |
 | FR-K9 | Carry per-revision provenance: source, author, revision, validity window, trust level, sensitivity. |
 | FR-K10 | Model typed relations between knowledge, specs, reviews, code, and tests. |
 | FR-K11 | Resolve aliases so a renamed item stays reachable by its old identifier. |

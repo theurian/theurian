@@ -361,11 +361,12 @@ def test_the_api_version_key_finds_each_shape_of_check(source: str) -> None:
 # -- Decision and Neutral: code with no caller or no specification reader -----
 
 
-def test_must_be_acyclic_has_no_caller_in_src() -> None:
+def test_must_be_acyclic_has_one_caller_in_src() -> None:
     names = frozenset({"must_be_acyclic"})
 
     assert _references(names), "positive control: the tests read `must_be_acyclic`"
-    assert _references(names, SRC) == set()
+    guards = SRC + "application/migration_relation_guards.py"
+    assert _references(names, SRC) == {(guards, "must_be_acyclic")}
 
 
 def test_specification_provider_has_no_implementation_and_returns_the_entity() -> None:

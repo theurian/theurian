@@ -12,6 +12,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -19,7 +20,11 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 import pytest
+from fakes import FrozenClock
 
+from theurian.application import migration_engine
+from theurian.application.migration_engine import MigrationEngine
+from theurian.domain import migration as mg
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
     SURFACEABLE_STATUSES,
@@ -29,7 +34,7 @@ from theurian.domain.enums import (
     Sensitivity,
     TrustLevel,
 )
-from theurian.domain.errors import InvariantViolationError
+from theurian.domain.errors import InvariantViolationError, RelationCycleError
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
@@ -39,8 +44,11 @@ from theurian.domain.knowledge import (
     RevisionMetadata,
     SourceAnchor,
 )
+from theurian.domain.migration import AddRelation, Migration, MigrationSet
 from theurian.domain.project import Project
 from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
+from theurian.infrastructure.sqlite import connection as opener
+from theurian.infrastructure.sqlite import schema
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
     StateDatabaseUnreadableError,
@@ -878,6 +886,178 @@ def test_a_state_database_written_at_version_three_is_refused(database: Path) ->
 
     assert exc.value.found == 3
     assert "rebuild" in str(exc.value).lower()
+
+
+def test_a_state_database_written_at_version_four_is_refused(database: Path) -> None:
+    """Version 4 specifically -- every state a Core without INV-6's guard built.
+
+    A literal, as the version-1 and version-3 refusals above pin theirs: a v4
+    state may hold a relation cycle no guard checked, and ADR-0040 decision 5's
+    closure holds only because this refusal sends the guarded build to rebuild it.
+    Reverting ``SCHEMA_VERSION`` to 4 is what turns this RED.
+    """
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute("UPDATE schema_metadata SET schema_version = 4")
+
+    with pytest.raises(SchemaVersionMismatchError) as exc:
+        open_read_connection(database)
+
+    assert exc.value.found == 4
+    assert "rebuild" in str(exc.value).lower()
+
+
+def _apply(database: Path, lock: Path, migrations: MigrationSet) -> None:
+    create_database(database, state_hash="b" * 64, engine_version=1)
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        MigrationEngine(FrozenClock(NOW), {}).apply(writer, PROJECT, migrations)
+
+
+def test_a_v4_state_holding_a_supersession_cycle_is_refused_and_its_rebuild_raises(
+    tmp_path: Path, lock: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0040 decision 5, *Why the guard ships with schema v5*: a guarded Core
+    neither reads the cyclic state an unguarded one built nor rebuilds its set."""
+    cyclic = MigrationSet.ordered(
+        (
+            Migration(
+                migration_id=MIGRATION,
+                created_at=NOW,
+                author="engineer@example.com",
+                operations=tuple(
+                    AddRelation(source_item_id=ITEM, relation_type=kind, target_item_id=OTHER_ITEM)
+                    for kind in (RelationType.SUPERSEDES, RelationType.SUPERSEDED_BY)
+                ),
+                checksum=ContentHash.of_text("cycle"),
+                source_path="cycle.yaml",
+            ),
+        )
+    )
+    v4, v5 = tmp_path / "v4.sqlite", tmp_path / "v5.sqlite"
+    with monkeypatch.context() as unguarded:
+        unguarded.setattr(migration_engine, "refuse_relation_cycles", lambda _relations: None)
+        _apply(v4, lock, cyclic)
+    with closing(sqlite3.connect(v4)) as raw, raw:
+        stored = raw.execute("SELECT relation_type FROM knowledge_relations ORDER BY 1").fetchall()
+        raw.execute("UPDATE schema_metadata SET schema_version = 4")
+    assert stored == [("superseded_by",), ("supersedes",)], "the unguarded engine stored the cycle"
+
+    with pytest.raises(SchemaVersionMismatchError) as opened:
+        open_read_connection(v4)
+    with pytest.raises(RelationCycleError) as rebuilt:
+        _apply(v5, lock, cyclic)
+
+    assert opened.value.found == 4
+    assert (rebuilt.value.relation_type, rebuilt.value.cycle) == (
+        RelationType.SUPERSEDES,
+        (ITEM, OTHER_ITEM),
+    )
+
+
+_OPS: dict[str, Callable[..., mg.Operation]] = {
+    "sup": lambda a, b: AddRelation(a, RelationType.SUPERSEDES, b),
+    "unsup": lambda a, b: mg.RemoveRelation(a, RelationType.SUPERSEDES, b),
+    "dep": lambda a, b: mg.DeprecateItem(a, superseded_by=b),
+    "item": lambda a: mg.CreateItem(a, KnowledgeKind.ARCHITECTURE, "backend", "o"),
+    "alias": mg.AddAlias,
+    "unalias": mg.RemoveAlias,
+}
+_LOOP = ("sup a x; alias x a",)
+_ALIAS_CYCLES = [
+    ("sup a b; sup b x; alias x a",),
+    ("sup a b; sup b x", "alias x a"),
+    _LOOP,
+    ("item a; sup a b; dep a x; alias x b",),
+    ("sup a b; sup b x; alias x c", "unalias x; alias x a"),
+    ("sup y x; alias y a; alias x y",),
+    ("item a; item b; dep a b; alias a b",),
+]
+
+
+def _apply_steps(lock: Path, tmp_path: Path, steps: tuple[str, ...]) -> None:
+    def op(text: str) -> mg.Operation:
+        kind, *ids = text.split()
+        return _OPS[kind](*map(ItemId, ids))
+
+    ops = [tuple(op(t) for t in step.split(";")) for step in steps]
+    migrations = tuple(
+        Migration(
+            MigrationId(f"01K1AAAAAA{i}1234567890ABCDE"), NOW, "e", o, ContentHash.of_text(f"{i}")
+        )
+        for i, o in enumerate(ops)
+    )
+    _apply(tmp_path / "s.sqlite", lock, MigrationSet.ordered(migrations))
+
+
+_IDS = ["source", "later", "self-loop", "supersededBy", "retarget", "chain", "rename"]
+
+
+@pytest.mark.parametrize("steps", _ALIAS_CYCLES, ids=_IDS)
+def test_a_cycle_closed_through_an_alias_is_refused(
+    tmp_path: Path, lock: Path, steps: tuple[str, ...]
+) -> None:
+    """INV-6 compares nodes and a served read resolves aliases: a literal-id guard applied these."""
+    with pytest.raises(RelationCycleError):
+        _apply_steps(lock, tmp_path, steps)
+
+
+def test_an_alias_self_loop_names_its_stored_row_and_alias(tmp_path: Path, lock: Path) -> None:
+    with pytest.raises(RelationCycleError, match=r"\): a supersedes x, alias x -> a$"):
+        _apply_steps(lock, tmp_path, _LOOP)
+
+
+def test_removing_the_row_the_message_lists_cures_the_cycle(tmp_path: Path, lock: Path) -> None:
+    _apply_steps(lock, tmp_path, (*_LOOP, "unsup a x"))
+
+
+def _plant_an_undecodable_relation(database: Path, lock: Path) -> None:
+    with write_transaction(database, lock) as connection:
+        SqliteWriter(connection).register_project(_project())
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute(
+            "INSERT INTO knowledge_relations VALUES (?, ?, 'no-such-relation', ?, NULL, ?)",
+            (PROJECT.value, ITEM.value, OTHER_ITEM.value, NOW.isoformat()),
+        )
+
+
+def test_the_planted_relation_row_is_undecodable_at_the_builds_own_version(
+    database: Path, lock: Path
+) -> None:
+    """The control for the test below, which would otherwise pass over a row any read decodes."""
+    _plant_an_undecodable_relation(database, lock)
+
+    with pytest.raises(StateDatabaseUnreadableError), SqliteCanonicalStore(database) as store:
+        store.list_relations(RequestContext(project_id=PROJECT), ITEM)
+    with pytest.raises(StateDatabaseUnreadableError), write_transaction(database, lock) as conn:
+        SqliteWriter(conn).list_project_relations(PROJECT)
+
+
+@pytest.mark.parametrize(
+    ("stamped", "build"), [(4, 5), (5, 4)], ids=["v4 database, v5 build", "v5 database, v4 build"]
+)
+def test_a_database_of_the_other_version_is_refused_before_any_row_is_decoded(
+    database: Path, lock: Path, monkeypatch: pytest.MonkeyPatch, stamped: int, build: int
+) -> None:
+    """ADR-0040 decision 4: per database, at open, never per row (#853).
+
+    The v4 build is this one with ``SCHEMA_VERSION`` patched in both modules the
+    open reads it from: ``schema``, whose ``is_supported`` compares, and
+    ``connection``, which reports what it expected.
+    """
+    _plant_an_undecodable_relation(database, lock)
+    with closing(sqlite3.connect(database)) as raw, raw:
+        raw.execute("UPDATE schema_metadata SET schema_version = ?", (stamped,))
+    for module in (schema, opener):
+        monkeypatch.setattr(module, "SCHEMA_VERSION", build)
+
+    with pytest.raises(SchemaVersionMismatchError) as read, SqliteCanonicalStore(database) as store:
+        store.list_relations(RequestContext(project_id=PROJECT), ITEM)
+    with pytest.raises(SchemaVersionMismatchError) as write, write_transaction(database, lock) as c:
+        SqliteWriter(c).list_project_relations(PROJECT)
+
+    assert (read.value.found, read.value.expected) == (stamped, build)
+    assert (write.value.found, write.value.expected) == (stamped, build)
 
 
 # -- #117: the CHECK is gone; INV-4 owns the window's ordering --------------

@@ -115,7 +115,7 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
         RevisionConflictError: If an operation's ``expectedRevision`` does not
             match what the store holds.
         UnenforceableScopeError, DuplicateContentFileError,
-            AliasItemCollisionError: From the engine's own whole-set guards.
+            AliasItemCollisionError, RelationCycleError: From the engine's own whole-set guards.
         StateDatabaseNotAFileError, StateDatabaseUnreadableError,
             StateDirectoryUnwritableError: From the transaction's own opener.
             The first refuses a named pipe, socket, device or directory at the

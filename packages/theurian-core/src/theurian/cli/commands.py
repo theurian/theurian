@@ -2730,9 +2730,11 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
                 )
                 return
             except (MigrationCycleError, MigrationError) as exc:
+                # The error's own remedy first (#205): `RelationCycleError`'s cure is a
+                # new migration, and "fix the migration set" reads as editing a frozen one.
                 _fail(
                     str(exc),
-                    remedy="Fix the migration set, then retry.",
+                    remedy=exc.remedy or "Fix the migration set, then retry.",
                     as_json=as_json,
                     code=EXIT_STATE_ERROR,
                 )
