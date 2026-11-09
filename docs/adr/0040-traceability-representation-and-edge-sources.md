@@ -865,12 +865,16 @@ Landing with this pull request:
   pin**, written by the tests step after this record. It is owed both directions
   for each fact under *Context*: a prose side that reddens when this record
   drifts from what it says, and a fact side derived from live source that
-  reddens when the codebase moves. Its standing invariants are F6's exact
+  reddens when the codebase moves. Of the facts under *Context*, F6's exact
   match, F7's two item-id endpoints, the label's lack of cross-item
-  uniqueness, and the state hash's reading no Git; every other fact is dated,
-  and its fact side is how #1033 and #1034 learn this record must move.
-  Decision 2's identity and digests, 3(c)'s cap and decision 5's guard have no
-  fact side until #1033 builds them. Its reach is stated in its module docstring.
+  uniqueness, and the state hash's reading no Git stand; the rest are dated,
+  and only F10's has a fact side. Its failure message names #1033, as the
+  census units' below do; none names #1034. Since #1033 the pin also holds five
+  sentences outside *Context* as standing: decision 4's `SCHEMA_VERSION` 5,
+  `schema_metadata` walk columns and `source_commit TEXT NOT NULL`, decision
+  5's guard in the migration engine, and the edge adapter's landing below.
+  Decision 2's identity and digests and 3(c)'s cap have no fact side until
+  #1033 builds them. Its reach is stated in its module docstring.
 
 Rests on enforcement that already holds:
 
