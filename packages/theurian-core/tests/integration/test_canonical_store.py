@@ -1165,8 +1165,10 @@ def test_an_alias_resolves_to_its_item(database: Path, lock: Path) -> None:
 def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path) -> None:
     """`source_commit` is a column of its own beside the anchors' commits, and
     `relation_type` must come back the closed enum, not a string equal to it."""
+    # The higher edge_id sorts first by rowid and by both indexes, so only
+    # `ORDER BY edge_id` puts `other` first.
     edge = TraceabilityEdge(
-        edge_id=EdgeId("01K1DEFEDG01234567890ABCDE"),
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"),
         project_id=PROJECT,
         source=TraceNode(TraceNodeType.CODE, "services/auth/token.py"),
         relation_type=RelationType.RELATED_TO,
@@ -1178,7 +1180,7 @@ def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path)
     )
     other = replace(
         edge,
-        edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"),
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDE"),
         source=TraceNode(TraceNodeType.TEST, "tests/test_token.py"),
         target=TraceNode(TraceNodeType.KNOWLEDGE, OTHER_ITEM.value),
         source_commit="d" * 40,
@@ -1186,8 +1188,8 @@ def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path)
     with write_transaction(database, lock) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(_project())
-        writer.add_traceability_edge(other)
         writer.add_traceability_edge(edge)
+        writer.add_traceability_edge(other)
 
     context = RequestContext(project_id=PROJECT)
     with SqliteCanonicalStore(database) as store:
@@ -1195,7 +1197,7 @@ def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path)
         by_source = store.list_traceability_edges(context, source=other.source)
         by_target = store.list_traceability_edges(context, target=edge.target)
 
-    assert listed == (edge, other)
+    assert listed == (other, edge)
     assert {type(loaded.relation_type) for loaded in listed} == {RelationType}
     assert (by_source, by_target) == ((other,), (edge,))
 
