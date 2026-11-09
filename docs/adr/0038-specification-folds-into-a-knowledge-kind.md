@@ -461,8 +461,7 @@ Still owed, with the issue or slice that will satisfy it:
 > `RelationType` that
 > [ADR-0040](0040-traceability-representation-and-edge-sources.md) decision 4
 > adds. "No caller" still holds, and so does "No edge exists yet": nothing
-> under `packages/theurian-core/src` calls either method until #1033's
-> collector lands.
+> under `packages/theurian-core/src` calls either method yet.
 > `test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_only_tested`
 > holds both halves over every tracked Python file outside ADR-0038's own pins:
 > each method is defined in the port and in `store.py` only, and no file but

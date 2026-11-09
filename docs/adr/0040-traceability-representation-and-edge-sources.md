@@ -896,7 +896,8 @@ Landed from item 1 below in #1033's schema-v5 pull request
 - **the BREAKING CHANGELOG entry, and FR-K8 restated.**
 
 Landed from item 1 below in #1033's edge-adapter pull request: the SQLite
-adapter for both port methods, which nothing calls until the collector lands.
+adapter for both port methods, which nothing under `packages/theurian-core/src`
+calls yet.
 
 - **`SqliteWriter.add_traceability_edge` and
   `SqliteCanonicalStore.list_traceability_edges`**:
