@@ -858,3 +858,48 @@ Still owed, with the issue or slice that will satisfy it:
 > construction-site population is keyed on "the three classes the additive
 > policy governs", four with `TraceNodeType`, whose sites it does not hold;
 > ADR-0040 decision 9's row 9 holds its decode-before-gate face.
+
+## Amendment 2 — `_edge_from_row` is a fourth derived-store row decoder (2026-11-09, ADR-0040, #1033)
+
+> **This is an append-only amendment.** #1033's SQLite adapter adds
+> `_edge_from_row`, the row decoder of `list_traceability_edges`, which
+> constructs `RelationType(row["relation_type"])`. *Context*'s console block,
+> one run at `f0e4d754`, and its *Derived store row decoders* row are each one
+> short, and neither is edited: ADR-0040's claims pin holds every line this
+> record had at `5ad30799` and admits an insertion only as an indented
+> amendment marker, which is neither a line of command output nor a table row.
+> The three commands, re-run on 2026-11-09 at
+> `eac5cd19`, a commit on the branch of #1033's edge-adapter pull request:
+
+```console
+$ git grep -n -E 'KnowledgeKind\(|RelationType\(|OperationKind\(' -- packages/theurian-core/src
+packages/theurian-core/src/theurian/application/okf_import.py:288:        return KnowledgeKind(concept.kind)
+packages/theurian-core/src/theurian/application/proposal_service.py:4074:            kind = OperationKind(raw)
+packages/theurian-core/src/theurian/domain/enums.py:57:class KnowledgeKind(StrEnum):
+packages/theurian-core/src/theurian/domain/enums.py:73:class RelationType(StrEnum):
+packages/theurian-core/src/theurian/domain/migration.py:51:class OperationKind(StrEnum):
+packages/theurian-core/src/theurian/infrastructure/filesystem/migration_loader.py:1670:                kind_=KnowledgeKind(payload["kind"]),
+packages/theurian-core/src/theurian/infrastructure/filesystem/migration_loader.py:1690:                relation_type=RelationType(payload["relationType"]),
+packages/theurian-core/src/theurian/infrastructure/filesystem/migration_loader.py:1697:                relation_type=RelationType(payload["relationType"]),
+packages/theurian-core/src/theurian/infrastructure/filesystem/migration_loader.py:1899:            kind=KnowledgeKind(metadata["kind"]),
+packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1769:        kind=KnowledgeKind(row["kind"]),
+packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1795:            kind=KnowledgeKind(row["kind"]),
+packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1872:        relation_type=RelationType(row["relation_type"]),
+packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1884:        relation_type=RelationType(row["relation_type"]),
+$ git grep -n -E '_closed_value\((KnowledgeKind|RelationType|OperationKind),' -- packages/theurian-core/src
+packages/theurian-core/src/theurian/mcp/tools.py:3398:                kind=_closed_value(KnowledgeKind, kind, "kind"),
+packages/theurian-core/src/theurian/mcp/tools.py:3558:                    kind=_closed_value(KnowledgeKind, kind, "kind"),
+$ git grep -n -E '^[[:space:]]+(KnowledgeKind|RelationType|OperationKind)( \| None)?,' -- packages/theurian-core/src/theurian/cli
+packages/theurian-core/src/theurian/cli/propose_commands.py:152:        KnowledgeKind | None, typer.Option("--kind", help="What sort of knowledge (required).")
+```
+
+> Of the first command's thirteen lines, three are class statements and four
+> the loader's constructions, as at `f0e4d754`; the six construction sites
+> left are `okf_import.py:288`, `proposal_service.py:4074` and the store's
+> `:1769`, `:1795`, `:1872` and `:1884`, the last `_edge_from_row`'s. It meets
+> an unknown value as the row's three decoders do (read from source, not run):
+> `list_traceability_edges` hands it to `_read_all`, which maps every row inside
+> `_reading()`, and that re-raises its `ValueError` as
+> `StateDatabaseUnreadableError`, naming only the exception type. Nothing under
+> `packages/theurian-core/src` calls `list_traceability_edges` yet, and the
+> decoder's two `TraceNodeType` constructions are outside the key (Amendment 1).
