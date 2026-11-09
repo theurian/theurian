@@ -20,6 +20,7 @@ import typer.main
 from adr_0037_support import collapsed
 from adr_0039_support import (
     ADDITIVE,
+    ADR,
     GOVERNED_NAMES,
     REPO_ROOT,
     _function,
@@ -52,10 +53,35 @@ pytestmark = pytest.mark.unit
 ADDITIVE_CLASSES: Final = (KnowledgeKind, RelationType, OperationKind)
 
 
+_FIRST_COMMAND: Final = (
+    "$ git grep -n -E 'KnowledgeKind\\(|RelationType\\(|OperationKind\\(' -- "
+    "packages/theurian-core/src"
+)
+
+
+def _amendments() -> list[str]:
+    """Each ``## Amendment`` section's text, collapsed, in file order."""
+    return [
+        collapsed(" ".join(_section(heading)))
+        for heading in ADR.read_text(encoding="utf-8").splitlines()
+        if heading.startswith("## Amendment ")
+    ]
+
+
 def _pasted() -> dict[str, collections.Counter[tuple[str, str]]]:
-    """The console block's output, per command: ``(src-relative path, line text)``."""
-    lines = _section("### What an unknown value meets today")
-    block = lines[lines.index("```console") + 1 : lines.index("```")]
+    """The latest dated run's output, per command: ``(src-relative path, line text)``.
+
+    *Context*'s run is dated to ``f0e4d754`` and held append-only by ADR-0040's claims
+    pin, so a re-run is appended as an amendment: the live population is the last
+    console block opening with the first command.
+    """
+    lines = ADR.read_text(encoding="utf-8").splitlines()
+    start = max(
+        at
+        for at, line in enumerate(lines[:-1])
+        if line == "```console" and lines[at + 1] == _FIRST_COMMAND
+    )
+    block = lines[start + 1 : lines.index("```", start + 1)]
     outputs: dict[str, collections.Counter[tuple[str, str]]] = {}
     command = ""
     for line in block:
@@ -183,7 +209,7 @@ _LOADER: Final = "infrastructure/filesystem/migration_loader.py"
 
 
 def test_the_pasted_commands_are_the_live_entry_point_population() -> None:
-    """Keyed on text, not on line numbers: the pasted lines are dated to ``f0e4d754``."""
+    """Keyed on text, not on line numbers: each paste is dated to its own commit."""
     references = _references()
     live = [
         collections.Counter(
@@ -404,6 +430,7 @@ def test_every_entry_point_the_schema_does_not_guard_has_its_table_row() -> None
         lines[lines.index("The entry points an unknown value can reach refuse it as follows:") :]
     )
     rows = {collapsed(row[0]): collapsed(" ".join(row[:2])) for row in table[1:]}
+    amendments = _amendments()
 
     assert sorted(loader) == [
         "_parse_operation",
@@ -414,7 +441,9 @@ def test_every_entry_point_the_schema_does_not_guard_has_its_table_row() -> None
     assert reachable == set(_TABLED)
     for label, token in _TABLED.values():
         [cell] = [text for first, text in rows.items() if first.startswith(label)]
-        assert token in cell, f"the {label!r} row no longer names {token!r}"
+        assert token in cell or any(label in text and token in text for text in amendments), (
+            f"neither the {label!r} row nor an amendment naming it names {token!r}"
+        )
 
 
 def test_the_wire_enumerated_sets_reach_an_mcp_decoder_outside_the_population() -> None:
