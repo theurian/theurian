@@ -50,7 +50,9 @@ The pin is six modules and a support module, split by section:
   first four are driven in ``test_adr_0039_populations.py``. A method defined on
   a class is held apart, by asserting each class holds its members and nothing
   else. A table row *accounts for* a site when the site's token appears
-  anywhere in the row's first two cells.
+  anywhere in the row's first two cells or, failing that, in an ``## Amendment``
+  section naming the row's label. The pasted population is the last console
+  block in the ADR opening with the first command, *Context*'s or an amendment's.
 - *What ``compat check`` reads* is every name ``compat_check`` and
   ``domain/compatibility.py`` spell or import; a read through another module's
   function is outside it.
