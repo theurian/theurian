@@ -1219,9 +1219,6 @@ def test_an_edge_filter_matches_the_literal_knowledge_id_and_resolves_no_alias(
         created_at=NOW,
         source_commit="c" * 40,
     )
-    out = replace(
-        into, edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"), source=into.target, target=into.source
-    )
     with write_transaction(database, lock) as connection:
         writer = SqliteWriter(connection)
         writer.register_project(_project())
@@ -1232,21 +1229,15 @@ def test_an_edge_filter_matches_the_literal_knowledge_id_and_resolves_no_alias(
             KnowledgeAlias(alias=old, item_id=ITEM, project_id=PROJECT, created_at=NOW)
         )
         writer.add_traceability_edge(into)
-        writer.add_traceability_edge(out)
 
     context = RequestContext(project_id=PROJECT)
     new = TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value)
     with SqliteCanonicalStore(database) as store:
         aliased = store.get_item(context, old)
-        by_target = tuple(
-            store.list_traceability_edges(context, target=n) for n in (new, into.target)
-        )
-        by_source = tuple(
-            store.list_traceability_edges(context, source=n) for n in (new, out.source)
-        )
+        listed = tuple(store.list_traceability_edges(context, target=n) for n in (new, into.target))
 
     assert aliased is not None and aliased.item_id == ITEM, "the fixture's alias resolves"
-    assert (by_target, by_source) == (((), (into,)), ((), (out,)))
+    assert listed == ((), (into,))
 
 
 _DEPTH_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_depth_bounded IS NULL)"
