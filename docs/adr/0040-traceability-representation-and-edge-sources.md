@@ -895,6 +895,26 @@ Landed from item 1 below in #1033's schema-v5 pull request
   `test_a_database_of_the_other_version_is_refused_before_any_row_is_decoded`;
 - **the BREAKING CHANGELOG entry, and FR-K8 restated.**
 
+Landed from item 1 below in #1033's edge-adapter pull request: the SQLite
+adapter for both port methods, which nothing calls until the collector lands.
+
+- **`SqliteWriter.add_traceability_edge` and
+  `SqliteCanonicalStore.list_traceability_edges`**:
+  `test_a_traceability_edge_round_trips_every_field`, two edges written and
+  read back equal, `source_commit` included, each `relation_type` a
+  `RelationType`, one listed by its source and the other by its target; and
+  `test_the_sqlite_store_is_the_one_adapter_of_the_edge_port`: outside
+  `domain/ports/`, `infrastructure/sqlite/store.py` is the only source file
+  defining either method;
+- **decision 4's `source_commit`**:
+  `test_an_edge_refuses_any_other_source_commit_without_echoing_it`, nine values
+  that are not a full lowercase hex commit id, each refused with the same fixed
+  message;
+- **decision 4's walk record**:
+  `test_an_incoherent_walk_record_is_refused_by_its_own_check`, eight
+  incoherent `schema_metadata` updates, each refused with SQLite naming the
+  CHECK the case expects.
+
 Still owed, with the issue or slice that will satisfy it:
 
 1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
