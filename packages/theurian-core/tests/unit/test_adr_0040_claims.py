@@ -334,7 +334,8 @@ def test_the_sqlite_store_is_the_one_adapter_of_the_edge_port() -> None:
     """The key without the exclusion finds the port itself, which is its positive control.
 
     Each method is named by its verb: ADR-0038 Amendment 3 says no file but the round-trip
-    test names either one, which ``test_adr_0038_populations.py`` holds over exact strings.
+    test spells either one, which ``test_adr_0038_populations.py`` holds over attributes, bare
+    names and exact strings.
     """
     everywhere = _port_definitions(SRC)
     adapters = [path for path in everywhere if "domain/ports/" not in path.as_posix()]
