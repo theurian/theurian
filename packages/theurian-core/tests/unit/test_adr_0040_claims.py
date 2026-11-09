@@ -27,9 +27,10 @@ update; a standing one, the sentence it holds.
   and the top-level classes of ``infrastructure/sqlite/store.py`` whose own body
   defines a method by either name, read from the syntax tree.
 - *Append-only* is ADR-0016 and ADR-0039 against ``5ad30799``: every base line
-  survives in order, nothing follows the last one but ``Amendment 1``, and every
-  run of lines inserted before it opens with ``*Amended in Amendment`` and is indented
-  throughout (an indented stray line beside a marker passes).
+  survives in order, what follows the last one opens with a blank line and
+  ``## Amendment 1`` and is not read further (ADR-0039's Amendment 2 is in it), and
+  every run of lines inserted before it opens with ``*Amended in Amendment`` and is
+  indented throughout (an indented stray line beside a marker passes).
 
 Decision 2's identity and digests and 3(c)'s cap have no fact side until #1033
 builds them.
