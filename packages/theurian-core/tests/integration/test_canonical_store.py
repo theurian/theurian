@@ -1202,6 +1202,53 @@ def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path)
     assert (by_source, by_target) == ((other,), (edge,))
 
 
+def test_an_edge_filter_matches_the_literal_knowledge_id_and_resolves_no_alias(
+    database: Path, lock: Path
+) -> None:
+    """ADR-0040 decision 4: "Collection resolves no alias" (:475). Resolution is #1034's
+    reachability step (:625-627); a store that resolved here would answer for it."""
+    old = ItemId("architecture.old-auth")
+    into = TraceabilityEdge(
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDE"),
+        project_id=PROJECT,
+        source=TraceNode(TraceNodeType.CODE, "services/auth/token.py"),
+        relation_type=RelationType.RELATED_TO,
+        target=TraceNode(TraceNodeType.KNOWLEDGE, old.value),
+        evidence=(ANCHOR,),
+        confidence=0.75,
+        created_at=NOW,
+        source_commit="c" * 40,
+    )
+    out = replace(
+        into, edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"), source=into.target, target=into.source
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        revision = _revision()
+        writer.append_revision(revision)
+        writer.put_item(_item().with_revision(revision))
+        writer.add_alias(
+            KnowledgeAlias(alias=old, item_id=ITEM, project_id=PROJECT, created_at=NOW)
+        )
+        writer.add_traceability_edge(into)
+        writer.add_traceability_edge(out)
+
+    context = RequestContext(project_id=PROJECT)
+    new = TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value)
+    with SqliteCanonicalStore(database) as store:
+        aliased = store.get_item(context, old)
+        by_target = tuple(
+            store.list_traceability_edges(context, target=n) for n in (new, into.target)
+        )
+        by_source = tuple(
+            store.list_traceability_edges(context, source=n) for n in (new, out.source)
+        )
+
+    assert aliased is not None and aliased.item_id == ITEM, "the fixture's alias resolves"
+    assert (by_target, by_source) == (((), (into,)), ((), (out,)))
+
+
 _DEPTH_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_depth_bounded IS NULL)"
 _BUDGET_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_budget_bounded IS NULL)"
 _FLAG: Final = "walk_%s_bounded IN (0, 1)"
