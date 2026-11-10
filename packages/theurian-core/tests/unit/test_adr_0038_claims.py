@@ -42,6 +42,7 @@ directory.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Final
 
@@ -105,8 +106,7 @@ ADR_STATES: Final[dict[str, str]] = {
         > `SqliteCanonicalStore.list_traceability_edges` in
         > `infrastructure/sqlite/store.py`""",
     "reference-key": """`packages/theurian-core/tests/integration/test_canonical_store.py` spells
-        > either one as an attribute, a bare name or a whole string constant. A comment,
-        > or a longer string holding a name, such as prose or a regex, is outside it.""",
+        > either one as an attribute, a bare name or a whole string constant.""",
     "reference": """**The entity is a reference from a knowledge item to a separate document,
         pinned at one revision of that item.**""",
     "registration": """`application/migration_engine.py`'s `_register_specification` looks up
@@ -302,3 +302,12 @@ def test_the_adr_still_states(name: str, fragment: str) -> None:
         f"fact half is GREEN, the tree did not move and the record is what gets restored; if it "
         f"is RED, the sentence moves with the tree."
     )
+
+
+ADR_NO_LONGER_STATES: Final = ("a longer string holding a name",)
+
+
+@pytest.mark.parametrize("sentence", ADR_NO_LONGER_STATES)
+def test_the_adr_no_longer_states(sentence: str) -> None:
+    unquoted = _collapsed(re.sub(r"(?m)^[> ]+", "", _adr().read_text(encoding="utf-8")))
+    assert _collapsed(sentence).casefold() not in unquoted.casefold()

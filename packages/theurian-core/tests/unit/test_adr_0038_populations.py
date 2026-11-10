@@ -113,6 +113,7 @@ def test_the_reference_key_counts_an_attribute_a_bare_name_and_a_whole_string_on
         "comment.py": "# list_traceability_edges",
         "docstring.py": '"""Reads list_traceability_edges once."""',
         "regex.py": "re.compile(r'def (list_traceability_edges)[(]')",
+        "fstring.py": 'f"list_traceability_edges{suffix}"',
     }
     monkeypatch.setattr(
         "adr_0038_support._parsed", lambda: {path: ast.parse(s) for path, s in shapes.items()}
@@ -120,7 +121,12 @@ def test_the_reference_key_counts_an_attribute_a_bare_name_and_a_whole_string_on
 
     spelled, _ = _index.__wrapped__()
 
-    assert spelled["list_traceability_edges"] == {"attribute.py", "name.py", "string.py"}
+    assert spelled["list_traceability_edges"] == {
+        "attribute.py",
+        "name.py",
+        "string.py",
+        "fstring.py",
+    }
 
 
 def test_only_a_registration_writes_the_revision_pin_and_re_registering_re_pins_it() -> None:
