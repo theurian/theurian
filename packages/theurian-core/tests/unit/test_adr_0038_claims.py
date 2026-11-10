@@ -104,6 +104,9 @@ ADR_STATES: Final[dict[str, str]] = {
         > SQLite, as `SqliteWriter.add_traceability_edge` and
         > `SqliteCanonicalStore.list_traceability_edges` in
         > `infrastructure/sqlite/store.py`""",
+    "reference-key": """`packages/theurian-core/tests/integration/test_canonical_store.py` spells
+        > either one as an attribute, a bare name or a whole string constant. A comment,
+        > or a longer string holding a name, such as prose or a regex, is outside it.""",
     "reference": """**The entity is a reference from a knowledge item to a separate document,
         pinned at one revision of that item.**""",
     "registration": """`application/migration_engine.py`'s `_register_specification` looks up

@@ -41,6 +41,7 @@ from adr_0038_support import (
     _definitions,
     _executed_sql,
     _function,
+    _index,
     _raises,
     _reads_the_version,
     _references,
@@ -98,6 +99,28 @@ def test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_onl
         "a traceability edge method is now referenced outside its round-trip test; "
         "ADR-0038's `No edge exists yet` and #277's `cheap moment` both move with it"
     )
+
+
+def test_the_reference_key_counts_an_attribute_a_bare_name_and_a_whole_string_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0038 Amendment 3 states this as the pin above's reach; #1073's round one found it
+    stating more."""
+    shapes = {
+        "attribute.py": "store.list_traceability_edges(context)",
+        "name.py": "list_traceability_edges",
+        "string.py": "'list_traceability_edges'",
+        "comment.py": "# list_traceability_edges",
+        "docstring.py": '"""Reads list_traceability_edges once."""',
+        "regex.py": "re.compile(r'def (list_traceability_edges)[(]')",
+    }
+    monkeypatch.setattr(
+        "adr_0038_support._parsed", lambda: {path: ast.parse(s) for path, s in shapes.items()}
+    )
+
+    spelled, _ = _index.__wrapped__()
+
+    assert spelled["list_traceability_edges"] == {"attribute.py", "name.py", "string.py"}
 
 
 def test_only_a_registration_writes_the_revision_pin_and_re_registering_re_pins_it() -> None:
