@@ -607,6 +607,8 @@ ADR_STATES: Final[dict[str, str]] = {
         validates against their membership (decision 9); a schema served from outside
         `schemas/` is beyond it (#856). The scan reports every new occurrence within its reach
         (*Context*'s "What the scan cannot report") for a person to classify.""",
+    # Amendment 2's blockquote: its `>` markers are part of the collapsed text, so a re-wrap
+    # of the next two is RED, unlike the rest of this table.
     # Fact half: test_adr_0040_claims.py's `_append_only_breach` and its refusals test.
     "a2-append-only": """ADR-0040's claims pin holds every line this
         > record had at `5ad30799` and admits an insertion above the last of them only
