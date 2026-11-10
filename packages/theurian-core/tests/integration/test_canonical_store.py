@@ -1396,6 +1396,61 @@ def test_a_revision_cannot_be_moved_out_from_under_the_item_pointing_at_it(
         )
 
 
+def test_an_edge_filter_matches_the_whole_endpoint_inside_the_callers_project(
+    database: Path, lock: Path
+) -> None:
+    """SEC-13, and an endpoint is its type and id together: `n` is both a CODE and a TEST node
+    here, and the foreign edge shares the CODE one."""
+    code, test = TraceNode(TraceNodeType.CODE, "n"), TraceNode(TraceNodeType.TEST, "n")
+    forward = TraceabilityEdge(
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCD1"),
+        project_id=PROJECT,
+        source=code,
+        relation_type=RelationType.RELATED_TO,
+        target=test,
+        evidence=(ANCHOR,),
+        confidence=0.75,
+        created_at=NOW,
+        source_commit="c" * 40,
+    )
+    back = replace(forward, edge_id=EdgeId("01K1DEFEDG01234567890ABCD2"), source=test, target=code)
+    to_item = replace(
+        forward,
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCD3"),
+        target=TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value),
+    )
+    foreign = replace(
+        forward,
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCD4"),
+        project_id=OTHER_PROJECT,
+        target=TraceNode(TraceNodeType.KNOWLEDGE, "architecture.foreign-policy"),
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.register_project(replace(_project(), project_id=OTHER_PROJECT))
+        for edge in (forward, back, to_item, foreign):
+            writer.add_traceability_edge(edge)
+
+    context = RequestContext(project_id=PROJECT)
+    with SqliteCanonicalStore(database) as store:
+        theirs = store.list_traceability_edges(
+            RequestContext(project_id=OTHER_PROJECT), target=foreign.target
+        )
+        listed = store.list_traceability_edges(context)
+        by_source = tuple(store.list_traceability_edges(context, source=n) for n in (code, test))
+        by_target = tuple(
+            store.list_traceability_edges(context, target=n) for n in (code, test, foreign.target)
+        )
+        both = store.list_traceability_edges(context, source=code, target=test)
+
+    assert theirs == (foreign,), "the foreign edge is written, and its own project reads it"
+    assert listed == (forward, back, to_item)
+    assert by_source == ((forward, to_item), (back,))
+    assert by_target == ((back,), (forward,), ())
+    assert both == (forward,)
+
+
 # -- Migration history -----------------------------------------------------
 
 
