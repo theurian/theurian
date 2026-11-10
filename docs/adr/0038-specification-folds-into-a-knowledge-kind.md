@@ -466,5 +466,4 @@ Still owed, with the issue or slice that will satisfy it:
 > holds both halves over every tracked Python file outside ADR-0038's own pins:
 > each method is defined in the port and in `store.py` only, and no file but
 > `packages/theurian-core/tests/integration/test_canonical_store.py` spells
-> either one as an attribute, a bare name or a whole string constant. A comment,
-> or a longer string holding a name, such as prose or a regex, is outside it.
+> either one as an attribute, a bare name or a whole string constant.
