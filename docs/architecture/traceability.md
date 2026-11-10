@@ -47,7 +47,7 @@ TraceabilityEdge(
     target=TraceNode(TEST, "tests/integration/test_cancel_order.py::test_deadline"),
     evidence=(SourceAnchor(commit_sha="a1b2c3", file_path="...", line_start=42),),
     confidence=1.0,
-    source_commit="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    source_commit="...",
 )
 ```
 
