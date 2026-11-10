@@ -865,10 +865,9 @@ Still owed, with the issue or slice that will satisfy it:
 > `_edge_from_row`, the row decoder of `list_traceability_edges`, which
 > constructs `RelationType(row["relation_type"])`. *Context*'s console block,
 > one run at `f0e4d754`, and its *Derived store row decoders* row are each one
-> short, and neither is edited: ADR-0040's claims pin holds every line this
-> record had at `5ad30799` and admits an insertion above the last of them only
-> as an indented run opening with an amendment marker, which is neither a line
-> of command output nor a table row.
+> short, and neither is edited. ADR-0040's claims pin holds *Context*
+> append-only against `5ad30799`, by the key its module docstring states under
+> *Append-only* (`packages/theurian-core/tests/unit/test_adr_0040_claims.py`).
 > The three commands, re-run on 2026-11-09 at
 > `eac5cd19`, a commit on the branch of #1033's edge-adapter pull request:
 
