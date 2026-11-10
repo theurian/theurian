@@ -3,8 +3,8 @@
 ADR-0040 ships no code, so each sentence it states about the repository was
 measured once, at ``5ad30799``. A *fact* pin recomputes it from live source or
 schema and goes RED when the tree moves; a *prose* pin goes RED when the record
-drifts. A dated fact's failure message names #1033 or #1034 and the sentence to
-update; one standing since #1033, the sentence it holds.
+drifts. A dated fact's failure message names #1033 and the sentence to update;
+one standing since #1033, the sentence it holds.
 
 **Reach.** Each key, beside the claim it holds:
 
