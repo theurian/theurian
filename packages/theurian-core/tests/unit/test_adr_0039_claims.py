@@ -123,6 +123,7 @@ from typing import Final
 import pytest
 from adr_0037_support import collapsed
 from adr_0039_support import (
+    ADR,
     MIGRATION_SCHEMA,
     REPO_ROOT,
     _adr,
@@ -610,9 +611,9 @@ ADR_STATES: Final[dict[str, str]] = {
     # Amendment 2's blockquote: its `>` markers are part of the collapsed text, so a re-wrap
     # of the next two is RED, unlike the rest of this table.
     # Fact half: test_adr_0040_claims.py's `_append_only_breach` and its refusals test.
-    "a2-append-only": """ADR-0040's claims pin holds every line this
-        > record had at `5ad30799` and admits an insertion above the last of them only
-        > as an indented run opening with an amendment marker""",
+    "a2-append-only": """ADR-0040's claims pin holds *Context*
+        > append-only against `5ad30799`, by the key its module docstring states under
+        > *Append-only* (`packages/theurian-core/tests/unit/test_adr_0040_claims.py`).""",
     # Fact half: the two tests it names, in test_adr_0039_refusals.py.
     "a2-decoder-tests": """naming only the exception type.
         > `test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database[edge]`
@@ -645,12 +646,14 @@ ADR_NO_LONGER_STATES: Final = (
     "before its caller's gate runs",
     "the older Core's refusal is undiagnosable",
     "every new occurrence for a person to classify",
+    "neither a line of command output nor a table row",
 )
 
 
 @pytest.mark.parametrize("sentence", ADR_NO_LONGER_STATES)
 def test_the_adr_no_longer_states(sentence: str) -> None:
-    assert collapsed(sentence).casefold() not in _adr().casefold()
+    unquoted = collapsed(re.sub(r"(?m)^[> ]+", "", ADR.read_text(encoding="utf-8")))
+    assert collapsed(sentence).casefold() not in unquoted.casefold()
 
 
 def _bullets(lines: list[str]) -> list[str]:
