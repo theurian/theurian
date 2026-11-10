@@ -25,7 +25,7 @@ one standing since #1033, the sentence it holds.
 - *Adapters of the edge port* are source lines under ``src`` outside
   ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``,
   and the top-level classes of ``infrastructure/sqlite/store.py`` whose own body
-  has a ``def`` by either name, read from the syntax tree; an ``async def`` is not.
+  has a ``def`` or an ``async def`` by either name, read from the syntax tree.
 - *Append-only* is ADR-0016 and ADR-0039 against ``5ad30799``: every base line
   survives in order, what follows the last one opens with a blank line and
   ``## Amendment 1`` and is not read further (ADR-0039's Amendment 2 is in it), and
@@ -344,7 +344,8 @@ def test_the_sqlite_store_is_the_one_adapter_of_the_edge_port() -> None:
         for owner in _trees()["infrastructure/sqlite/store.py"].body
         if isinstance(owner, ast.ClassDef)
         for method in owner.body
-        if isinstance(method, ast.FunctionDef) and _PORT_KEY.fullmatch(f"def {method.name}(")
+        if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef)
+        and _PORT_KEY.fullmatch(f"def {method.name}(")
     }
     adapter = STANDING.format(
         where="Compliance",
