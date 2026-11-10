@@ -499,6 +499,11 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
         "Landed from item 1 below in #1033's edge-adapter pull request: the SQLite adapter for "
         "both port methods, which nothing under packages/theurian-core/src calls yet.",
     ),
+    "the edge adapter's one source file": (
+        "## Compliance",
+        "test_the_sqlite_store_is_the_one_adapter_of_the_edge_port: outside domain/ports/, "
+        "infrastructure/sqlite/store.py is the only source file with a def of either method;",
+    ),
 }
 
 

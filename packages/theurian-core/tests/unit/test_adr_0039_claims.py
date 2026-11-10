@@ -607,6 +607,17 @@ ADR_STATES: Final[dict[str, str]] = {
         validates against their membership (decision 9); a schema served from outside
         `schemas/` is beyond it (#856). The scan reports every new occurrence within its reach
         (*Context*'s "What the scan cannot report") for a person to classify.""",
+    # Fact half: test_adr_0040_claims.py's `_append_only_breach` and its refusals test.
+    "a2-append-only": """ADR-0040's claims pin holds every line this
+        > record had at `5ad30799` and admits an insertion above the last of them only
+        > as an indented run opening with an amendment marker""",
+    # Fact half: the two tests it names, in test_adr_0039_refusals.py.
+    "a2-decoder-tests": """naming only the exception type.
+        > `test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database[edge]`
+        > decodes a row with an unknown `relation_type` inside `_reading()` and gets that
+        > error, the value absent from its message;
+        > `test_every_store_read_decodes_its_row_inside_the_reading_guard` holds every
+        > bare-name reference to a decoder in `store.py`""",
 }
 
 
