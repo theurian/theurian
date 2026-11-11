@@ -222,9 +222,12 @@ def _binding(statement: ast.stmt) -> tuple[str, ast.expr] | None:
         target = statement.targets[0]
         if isinstance(target, ast.Name):
             return target.id, statement.value
-    elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
-        if isinstance(statement.target, ast.Name):
-            return statement.target.id, statement.value
+    elif (
+        isinstance(statement, ast.AnnAssign)
+        and statement.value is not None
+        and isinstance(statement.target, ast.Name)
+    ):
+        return statement.target.id, statement.value
     return None
 
 
