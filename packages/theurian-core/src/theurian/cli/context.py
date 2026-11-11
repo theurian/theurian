@@ -8,6 +8,7 @@ rather than being scattered across command bodies.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -122,6 +123,26 @@ def default_branch(root: Path) -> str:
     return _line(result.stdout) or "main"
 
 
+# Not urllib.parse.urlsplit: it removes \t\r\n anywhere in the URL, which undoes
+# the `\n` row of test_a_remote_url_with_trailing_whitespace_is_reported_as_stored;
+# it strips leading whitespace; and it raises ValueError on `[::1`. A bare ssh
+# username is a login name, not a credential, so it stays; scp-like
+# `user@host:path` has no scheme and never matches.
+_AUTHORITY_USERINFO = re.compile(
+    r"^(?P<prefix>(?:[A-Za-z0-9+.-]+::)?(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://)(?P<userinfo>[^/?#]*)@"
+)
+_SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
+
+
+def _without_userinfo(url: str) -> str:
+    match = _AUTHORITY_USERINFO.match(url)
+    if match is None:
+        return url
+    if match["scheme"].lower() in _SSH_SCHEMES and ":" not in match["userinfo"]:
+        return url
+    return match["prefix"] + url[match.end() :]
+
+
 def repository_url(root: Path) -> str | None:
     try:
         result = subprocess.run(
@@ -134,7 +155,7 @@ def repository_url(root: Path) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return _line(result.stdout) or None
+    return _without_userinfo(_line(result.stdout)) or None
 
 
 def _schema_candidate_exists(candidate: Path) -> bool:

@@ -174,6 +174,25 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Fixed
 
+- **The recorded remote URL no longer carries credentials**
+  ([#1061](https://github.com/theurian/theurian/issues/1061)). `repository_url`
+  in `cli/context.py` now removes the authority userinfo from
+  `remote.origin.url`. With `https://alice:TOKEN@host/r.git` the token was
+  written to `project register --json` and `project list --json` stdout,
+  `$THEURIAN_DATA_DIR/projects.json`, and the state SQLite
+  `projects.repository_url` row. It reached no MCP output; the ingest anchor
+  held it in memory only. A credential git injects through
+  `url.<base>.insteadOf` is stripped too, since `git remote get-url` expands
+  it. Kept by design: a bare ssh username (`ssh://git@host/...`, `git+ssh://`,
+  `ssh+git://`; `ssh://user:pw@` is stripped), scp-like `user@host:path`, a
+  token in `?query`, and an `ext::` command line not beginning with
+  `scheme://`. Records written before the fix heal on the next
+  `theurian migrate apply` (the state `projects` row) and the next
+  `theurian project register` (`projects.json`). **Rotate any credential that
+  was ever in `remote.origin.url`:** rewriting the row does not scrub old bytes
+  from SQLite free pages (no `secure_delete`), and earlier state files and
+  terminal transcripts may still hold it.
+
 - **The CLI's git reads take the project root byte-exact and strip only git's
   newline** ([#1039](https://github.com/theurian/theurian/issues/1039)). Each
   git read in `cli/context.py` used the locale codec and `str.strip()`. A
