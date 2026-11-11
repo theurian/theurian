@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M75HG8N70TSY1MVKDSVSV47Y",
+  "migrationId": "01M75HG8N70TSY1MVKDSVSV47Z",
+  "itemId": "architecture.trigram-index-beside-the-word-index",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "971-reseed-adr-0023",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0023 at 59e9d4e7. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at f6b8a874, and 59e9d4e7 (#1013) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#971).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "59e9d4e79324a27fe51b8ad4655c0d1f621c6b44",
+      "filePath": "docs/adr/0023-trigram-index-beside-the-word-index.md"
+    }
+  ]
+}
