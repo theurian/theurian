@@ -32,10 +32,11 @@ from theurian.domain.enums import (
     KnowledgeStatus,
     RelationType,
     Sensitivity,
+    TraceNodeType,
     TrustLevel,
 )
 from theurian.domain.errors import InvariantViolationError, RelationCycleError
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.identifiers import EdgeId, ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
     KnowledgeItem,
@@ -46,6 +47,7 @@ from theurian.domain.knowledge import (
 )
 from theurian.domain.migration import AddRelation, Migration, MigrationSet
 from theurian.domain.project import Project
+from theurian.domain.specification import TraceabilityEdge, TraceNode
 from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 from theurian.infrastructure.sqlite import connection as opener
 from theurian.infrastructure.sqlite import schema
@@ -1157,6 +1159,147 @@ def test_an_alias_resolves_to_its_item(database: Path, lock: Path) -> None:
     assert resolved.item_id == ITEM
 
 
+# -- ADR-0040 decisions 3 and 4: traceability edges and the walk record -----
+
+
+def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path) -> None:
+    """`source_commit` is a column of its own beside the anchors' commits, and
+    `relation_type` must come back the closed enum, not a string equal to it."""
+    # The higher edge_id sorts first by rowid and by both indexes, so only
+    # `ORDER BY edge_id` puts `other` first.
+    edge = TraceabilityEdge(
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"),
+        project_id=PROJECT,
+        source=TraceNode(TraceNodeType.CODE, "services/auth/token.py"),
+        relation_type=RelationType.RELATED_TO,
+        target=TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value),
+        evidence=(ANCHOR, SourceAnchor(provider="git", source_uri="git://demo/b.md")),
+        confidence=0.75,
+        created_at=NOW,
+        source_commit="c" * 64,
+    )
+    other = replace(
+        edge,
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDE"),
+        source=TraceNode(TraceNodeType.TEST, "tests/test_token.py"),
+        target=TraceNode(TraceNodeType.KNOWLEDGE, OTHER_ITEM.value),
+        source_commit="d" * 40,
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.add_traceability_edge(edge)
+        writer.add_traceability_edge(other)
+
+    context = RequestContext(project_id=PROJECT)
+    with SqliteCanonicalStore(database) as store:
+        listed = store.list_traceability_edges(context)
+        by_source = store.list_traceability_edges(context, source=other.source)
+        by_target = store.list_traceability_edges(context, target=edge.target)
+
+    assert listed == (other, edge)
+    assert {type(loaded.relation_type) for loaded in listed} == {RelationType}
+    assert (by_source, by_target) == ((other,), (edge,))
+
+
+def test_an_edge_filter_matches_the_literal_knowledge_id_and_resolves_no_alias(
+    database: Path, lock: Path
+) -> None:
+    """ADR-0040 decision 3: "Collection resolves no alias" (:475). Resolution is #1034's
+    reachability step (:625-627); a store that resolved here would answer for it."""
+    old = ItemId("architecture.old-auth")
+    into = TraceabilityEdge(
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDE"),
+        project_id=PROJECT,
+        source=TraceNode(TraceNodeType.CODE, "services/auth/token.py"),
+        relation_type=RelationType.RELATED_TO,
+        target=TraceNode(TraceNodeType.KNOWLEDGE, old.value),
+        evidence=(ANCHOR,),
+        confidence=0.75,
+        created_at=NOW,
+        source_commit="c" * 40,
+    )
+    out = replace(
+        into, edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"), source=into.target, target=into.source
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        revision = _revision()
+        writer.append_revision(revision)
+        writer.put_item(_item().with_revision(revision))
+        writer.add_alias(
+            KnowledgeAlias(alias=old, item_id=ITEM, project_id=PROJECT, created_at=NOW)
+        )
+        writer.add_traceability_edge(into)
+        writer.add_traceability_edge(out)
+
+    context = RequestContext(project_id=PROJECT)
+    new = TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value)
+    with SqliteCanonicalStore(database) as store:
+        aliased = store.get_item(context, old)
+        by_target = tuple(
+            store.list_traceability_edges(context, target=n) for n in (new, into.target)
+        )
+        by_source = tuple(
+            store.list_traceability_edges(context, source=n) for n in (new, out.source)
+        )
+
+    assert aliased is not None and aliased.item_id == ITEM, "the fixture's alias resolves"
+    assert (by_target, by_source) == (((), (into,)), ((), (out,)))
+
+
+_DEPTH_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_depth_bounded IS NULL)"
+_BUDGET_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_budget_bounded IS NULL)"
+_FLAG: Final = "walk_%s_bounded IN (0, 1)"
+_DIGESTS_NEED_A_COMMIT: Final = (
+    "walk_commit IS NOT NULL OR (walk_shallow_digest IS NULL AND walk_capped_digest IS NULL)"
+)
+
+
+def test_a_new_state_records_no_walk_and_accepts_a_coherent_one(database: Path) -> None:
+    with closing(sqlite3.connect(database)) as raw, raw:
+        fresh = raw.execute(
+            "SELECT walk_commit, walk_shallow_digest, walk_depth_bounded, walk_budget_bounded, "
+            "walk_capped_digest FROM schema_metadata"
+        ).fetchone()
+        raw.execute(
+            "UPDATE schema_metadata SET walk_commit = 'c', walk_depth_bounded = 1, "
+            "walk_budget_bounded = 0"
+        )
+        raw.execute(
+            "UPDATE schema_metadata SET walk_shallow_digest = 's', walk_capped_digest = 'x'"
+        )
+
+    assert fresh == (None,) * 5
+
+
+@pytest.mark.parametrize(
+    ("assignment", "check"),
+    [
+        ("walk_depth_bounded = 0", _DEPTH_NEEDS_A_COMMIT),
+        ("walk_commit = 'c', walk_budget_bounded = 0", _DEPTH_NEEDS_A_COMMIT),
+        ("walk_budget_bounded = 0", _BUDGET_NEEDS_A_COMMIT),
+        ("walk_commit = 'c', walk_depth_bounded = 0", _BUDGET_NEEDS_A_COMMIT),
+        ("walk_shallow_digest = 's'", _DIGESTS_NEED_A_COMMIT),
+        ("walk_capped_digest = 'x'", _DIGESTS_NEED_A_COMMIT),
+        ("walk_commit = 'c', walk_depth_bounded = 2, walk_budget_bounded = 0", _FLAG % "depth"),
+        ("walk_commit = 'c', walk_depth_bounded = 0, walk_budget_bounded = 2", _FLAG % "budget"),
+    ],
+)
+def test_an_incoherent_walk_record_is_refused_by_its_own_check(
+    database: Path, assignment: str, check: str
+) -> None:
+    """Each assignment breaks exactly one CHECK, so the one SQLite names is the one under test."""
+    with (
+        closing(sqlite3.connect(database)) as raw,
+        pytest.raises(sqlite3.IntegrityError) as refused,
+    ):
+        raw.execute(f"UPDATE schema_metadata SET {assignment}")  # noqa: S608 - the parameters above
+
+    assert str(refused.value) == f"CHECK constraint failed: {check}"
+
+
 # -- Project isolation -----------------------------------------------------
 
 
@@ -1251,6 +1394,61 @@ def test_a_revision_cannot_be_moved_out_from_under_the_item_pointing_at_it(
             "the pointer must still resolve inside its own project -- the stranding this key "
             "prevents is exactly a pointer whose project-scoped read comes back empty"
         )
+
+
+def test_an_edge_filter_matches_the_whole_endpoint_inside_the_callers_project(
+    database: Path, lock: Path
+) -> None:
+    """SEC-13, and an endpoint is its type and id together: `n` is both a CODE and a TEST node
+    here, and the foreign edge shares the CODE one."""
+    code, test = TraceNode(TraceNodeType.CODE, "n"), TraceNode(TraceNodeType.TEST, "n")
+    forward = TraceabilityEdge(
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCD1"),
+        project_id=PROJECT,
+        source=code,
+        relation_type=RelationType.RELATED_TO,
+        target=test,
+        evidence=(ANCHOR,),
+        confidence=0.75,
+        created_at=NOW,
+        source_commit="c" * 40,
+    )
+    back = replace(forward, edge_id=EdgeId("01K1DEFEDG01234567890ABCD2"), source=test, target=code)
+    to_item = replace(
+        forward,
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCD3"),
+        target=TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value),
+    )
+    foreign = replace(
+        forward,
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCD4"),
+        project_id=OTHER_PROJECT,
+        target=TraceNode(TraceNodeType.KNOWLEDGE, "architecture.foreign-policy"),
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.register_project(replace(_project(), project_id=OTHER_PROJECT))
+        for edge in (forward, back, to_item, foreign):
+            writer.add_traceability_edge(edge)
+
+    context = RequestContext(project_id=PROJECT)
+    with SqliteCanonicalStore(database) as store:
+        theirs = store.list_traceability_edges(
+            RequestContext(project_id=OTHER_PROJECT), target=foreign.target
+        )
+        listed = store.list_traceability_edges(context)
+        by_source = tuple(store.list_traceability_edges(context, source=n) for n in (code, test))
+        by_target = tuple(
+            store.list_traceability_edges(context, target=n) for n in (code, test, foreign.target)
+        )
+        both = store.list_traceability_edges(context, source=code, target=test)
+
+    assert theirs == (foreign,), "the foreign edge is written, and its own project reads it"
+    assert listed == (forward, back, to_item)
+    assert by_source == ((forward, to_item), (back,))
+    assert by_target == ((back,), (forward,), ())
+    assert both == (forward,)
 
 
 # -- Migration history -----------------------------------------------------

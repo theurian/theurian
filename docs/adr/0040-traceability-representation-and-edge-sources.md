@@ -865,12 +865,16 @@ Landing with this pull request:
   pin**, written by the tests step after this record. It is owed both directions
   for each fact under *Context*: a prose side that reddens when this record
   drifts from what it says, and a fact side derived from live source that
-  reddens when the codebase moves. Its standing invariants are F6's exact
+  reddens when the codebase moves. Of the facts under *Context*, F6's exact
   match, F7's two item-id endpoints, the label's lack of cross-item
-  uniqueness, and the state hash's reading no Git; every other fact is dated,
-  and its fact side is how #1033 and #1034 learn this record must move.
-  Decision 2's identity and digests, 3(c)'s cap and decision 5's guard have no
-  fact side until #1033 builds them. Its reach is stated in its module docstring.
+  uniqueness, and the state hash's reading no Git stand; the rest are dated,
+  and only F10's has a fact side. Its failure message names #1033, as the
+  census units' below do; none names #1034. Since #1033 the pin also holds five
+  sentences outside *Context* as standing: decision 4's `SCHEMA_VERSION` 5,
+  `schema_metadata` walk columns and `source_commit TEXT NOT NULL`, decision
+  5's guard in the migration engine, and the edge adapter's landing below.
+  Decision 2's identity and digests and 3(c)'s cap have no fact side until
+  #1033 builds them. Its reach is stated in its module docstring.
 
 Rests on enforcement that already holds:
 
@@ -894,6 +898,26 @@ Landed from item 1 below in #1033's schema-v5 pull request
 - **the two-way open**:
   `test_a_database_of_the_other_version_is_refused_before_any_row_is_decoded`;
 - **the BREAKING CHANGELOG entry, and FR-K8 restated.**
+
+Landed from item 1 below in #1033's edge-adapter pull request: the SQLite
+adapter for both port methods, which nothing under `packages/theurian-core/src`
+calls yet.
+
+- **`SqliteWriter.add_traceability_edge` and
+  `SqliteCanonicalStore.list_traceability_edges`**:
+  `test_a_traceability_edge_round_trips_every_field`, two edges written and
+  read back equal, `source_commit` included, each `relation_type` a
+  `RelationType`, one listed by its source and the other by its target; and
+  `test_the_sqlite_store_is_the_one_adapter_of_the_edge_port`, by the key
+  its module docstring states;
+- **decision 4's `source_commit`**:
+  `test_an_edge_refuses_any_other_source_commit_without_echoing_it`, nine values
+  that are not a full lowercase hex commit id, each refused with the same fixed
+  message;
+- **decision 4's walk record**:
+  `test_an_incoherent_walk_record_is_refused_by_its_own_check`, eight
+  incoherent `schema_metadata` updates, each refused with SQLite naming the
+  CHECK the case expects.
 
 Still owed, with the issue or slice that will satisfy it:
 

@@ -447,3 +447,23 @@ Still owed, with the issue or slice that will satisfy it:
 > `MigrationEngine.apply` on every apply, over every relation row of the
 > project, so a `supersedes` cycle between specification items is refused with
 > `RelationCycleError`.
+
+## Amendment 3 — the edge port has an implementation and still no caller (2026-11-09, ADR-0040, #1033)
+
+> **This is an append-only amendment.** *Context* says
+> `CanonicalStore.add_traceability_edge` and `list_traceability_edges` are
+> declared on the port "with no implementation and no caller". "No
+> implementation" was true when measured and is not now:
+> [#1033](https://github.com/theurian/theurian/issues/1033) implements both on
+> SQLite, as `SqliteWriter.add_traceability_edge` and
+> `SqliteCanonicalStore.list_traceability_edges` in
+> `infrastructure/sqlite/store.py`, carrying the `source_commit` and the
+> `RelationType` that
+> [ADR-0040](0040-traceability-representation-and-edge-sources.md) decision 4
+> adds. "No caller" still holds, and so does "No edge exists yet": nothing
+> under `packages/theurian-core/src` calls either method yet.
+> `test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_only_tested`
+> holds both halves over every tracked Python file outside ADR-0038's own pins:
+> each method is defined in the port and in `store.py` only, and no file but
+> `packages/theurian-core/tests/integration/test_canonical_store.py` spells
+> either one as an attribute, a bare name or a whole string constant.

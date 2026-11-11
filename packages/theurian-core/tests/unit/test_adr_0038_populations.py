@@ -41,6 +41,7 @@ from adr_0038_support import (
     _definitions,
     _executed_sql,
     _function,
+    _index,
     _raises,
     _reads_the_version,
     _references,
@@ -85,18 +86,47 @@ _SPECIFICATION_READERS: Final = frozenset({"get_specification", "list_specificat
 # -- Context: the entity's store methods and the table's SQL ------------------
 
 
-def test_the_traceability_edge_methods_are_declared_on_the_port_alone_and_never_called() -> None:
+def test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_only_tested() -> None:
     edge_methods = frozenset({"add_traceability_edge", "list_traceability_edges"})
+    round_trip = "packages/theurian-core/tests/integration/test_canonical_store.py"
 
     assert _references(frozenset({"register_specification"})), (
         "positive control: the reference scan no longer sees the engine's known write"
     )
     for name in edge_methods:
-        assert _definitions(name) == {PORT}, f"{name} is now defined outside the port"
-    assert _references(edge_methods) == set(), (
-        "a traceability edge method is now referenced; ADR-0038's `No edge exists yet` "
-        "and #277's `cheap moment` both move with it"
+        assert _definitions(name) == {PORT, STORE}, f"{name} is defined outside the port and store"
+    assert _references(edge_methods) == {(round_trip, name) for name in edge_methods}, (
+        "a traceability edge method is now referenced outside its round-trip test; "
+        "ADR-0038's `No edge exists yet` and #277's `cheap moment` both move with it"
     )
+
+
+def test_the_reference_key_counts_an_attribute_a_bare_name_and_a_whole_string_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0038 Amendment 3 states this as the pin above's reach; #1073's round one found it
+    stating more."""
+    shapes = {
+        "attribute.py": "store.list_traceability_edges(context)",
+        "name.py": "list_traceability_edges",
+        "string.py": "'list_traceability_edges'",
+        "comment.py": "# list_traceability_edges",
+        "docstring.py": '"""Reads list_traceability_edges once."""',
+        "regex.py": "re.compile(r'def (list_traceability_edges)[(]')",
+        "fstring.py": 'f"list_traceability_edges{suffix}"',
+    }
+    monkeypatch.setattr(
+        "adr_0038_support._parsed", lambda: {path: ast.parse(s) for path, s in shapes.items()}
+    )
+
+    spelled, _ = _index.__wrapped__()
+
+    assert spelled["list_traceability_edges"] == {
+        "attribute.py",
+        "name.py",
+        "string.py",
+        "fstring.py",
+    }
 
 
 def test_only_a_registration_writes_the_revision_pin_and_re_registering_re_pins_it() -> None:
@@ -280,6 +310,8 @@ def test_every_whole_object_read_in_src_is_one_already_judged_not_to_publish_a_r
         (SRC + "application/setup_steps.py", "_service_path", "getattr"),
         (SRC + "cli/setup_commands.py", "_service_path", "getattr"),
         (SRC + "domain/raptor.py", "_differing_components", "getattr"),
+        # Handed `edge.evidence`'s `SourceAnchor`s, never a revision.
+        (SRC + "infrastructure/sqlite/store.py", "add_traceability_edge", "asdict"),
         (SRC + "domain/review_finding.py", "_matching_surface", "vars"),
         (SRC + "domain/review_search.py", "texts_of", "getattr"),
         (SRC + "security/yaml_loading.py", "_drop_implicit_resolver", "__dict__"),

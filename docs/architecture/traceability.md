@@ -43,10 +43,11 @@ Each edge carries **evidence** and **confidence**:
 ```python
 TraceabilityEdge(
     source=TraceNode(SPECIFICATION, "spec.order-cancellation"),
-    relation_type="verified_by",
+    relation_type=RelationType.VERIFIED_BY,
     target=TraceNode(TEST, "tests/integration/test_cancel_order.py::test_deadline"),
     evidence=(SourceAnchor(commit_sha="a1b2c3", file_path="...", line_start=42),),
     confidence=1.0,
+    source_commit="...",
 )
 ```
 
