@@ -536,8 +536,8 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
     ),
     "the edge adapter's one source file": (
         "## Compliance",
-        "test_the_sqlite_store_is_the_one_adapter_of_the_edge_port: outside domain/ports/, "
-        "infrastructure/sqlite/store.py is the only source file with a def of either method;",
+        "test_the_sqlite_store_is_the_one_adapter_of_the_edge_port, by the key its module "
+        "docstring states;",
     ),
 }
 
@@ -633,6 +633,7 @@ ABSENT: Final = (
     "every other fact is dated",
     "#1033 and #1034 learn this record must move",
     "and decision 5's guard have no fact side",
+    "is the only source file with a def of either method",
 )
 ROUND_LABEL: Final = re.compile(r"(?<![-\w])R[1-3]\b|\(\(c\)")
 FILES: Final = {"ADR-0040": ADR, "roadmap": ROADMAP, "ADR-0016": ADR_0016, "ADR-0039": ADR_0039}

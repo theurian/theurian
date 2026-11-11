@@ -908,9 +908,8 @@ calls yet.
   `test_a_traceability_edge_round_trips_every_field`, two edges written and
   read back equal, `source_commit` included, each `relation_type` a
   `RelationType`, one listed by its source and the other by its target; and
-  `test_the_sqlite_store_is_the_one_adapter_of_the_edge_port`: outside
-  `domain/ports/`, `infrastructure/sqlite/store.py` is the only source file
-  with a `def` of either method;
+  `test_the_sqlite_store_is_the_one_adapter_of_the_edge_port`, by the key
+  its module docstring states;
 - **decision 4's `source_commit`**:
   `test_an_edge_refuses_any_other_source_commit_without_echoing_it`, nine values
   that are not a full lowercase hex commit id, each refused with the same fixed

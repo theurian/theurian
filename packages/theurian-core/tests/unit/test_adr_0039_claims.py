@@ -619,8 +619,8 @@ ADR_STATES: Final[dict[str, str]] = {
         > `test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database[edge]`
         > decodes a row with an unknown `relation_type` inside `_reading()` and gets that
         > error, the value absent from its message;
-        > `test_every_store_read_decodes_its_row_inside_the_reading_guard` holds every
-        > bare-name reference to a decoder in `store.py`""",
+        > `test_every_store_read_decodes_its_row_inside_the_reading_guard` is the
+        > second, by the key in its own body.""",
 }
 
 
@@ -647,6 +647,7 @@ ADR_NO_LONGER_STATES: Final = (
     "the older Core's refusal is undiagnosable",
     "every new occurrence for a person to classify",
     "neither a line of command output nor a table row",
+    "holds every bare-name reference to a decoder",
 )
 
 

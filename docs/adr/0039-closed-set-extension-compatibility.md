@@ -904,9 +904,7 @@ packages/theurian-core/src/theurian/cli/propose_commands.py:152:        Knowledg
 > `test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database[edge]`
 > decodes a row with an unknown `relation_type` inside `_reading()` and gets that
 > error, the value absent from its message;
-> `test_every_store_read_decodes_its_row_inside_the_reading_guard` holds every
-> bare-name reference to a decoder in `store.py` inside a `_reading()` block, a
-> `_read_one` or `_read_all` argument or a decoder's body, and both readers'
-> mapping inside `_reading()`. Nothing under
+> `test_every_store_read_decodes_its_row_inside_the_reading_guard` is the
+> second, by the key in its own body. Nothing under
 > `packages/theurian-core/src` calls `list_traceability_edges` yet, and the
 > decoder's two `TraceNodeType` constructions are outside the key (Amendment 1).
