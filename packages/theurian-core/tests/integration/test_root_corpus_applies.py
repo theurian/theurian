@@ -343,10 +343,11 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
         1,
     ),
     # Re-measured 2026-11-11 for #971's re-seed: the path-qualified
-    # `test_index_fallback.py::...` cite counts 1 in both the new body and the
-    # revision it replaced, so it stopped discriminating. `#1000` counts 1 in the new
-    # body and 0 in all three earlier corpus bodies and at every source commit before
-    # 59e9d4e7; it is the issue reference of the "Corrected in place" note.
+    # `test_a_missing_table_raises_instead_of_answering_nothing` cite counts 1 in
+    # both the new body and the revision it replaced, so it stopped discriminating.
+    # `#1000` counts 1 in the new body and 0 in all three earlier corpus bodies and
+    # at every source commit before 59e9d4e7; it is the issue reference of the
+    # "Corrected in place" note.
     _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#1000", 1),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#499", 4),
     # Re-measured 2026-10-08 for #832's re-seed: `#553` counts 1 in both the new
