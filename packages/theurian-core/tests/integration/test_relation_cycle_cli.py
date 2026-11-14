@@ -73,7 +73,9 @@ def test_migrate_apply_renders_the_cycle_and_the_remove_relation_remedy(
     assert payload["remedy"] == (
         "Write a new migration with a `removeRelation` for one `supersedes` relation from an "
         "item of this cycle to the next (or for the `superseded_by` relation from the next item "
-        "back to it, whichever the migrations recorded), then run `theurian migrate apply` again."
+        "back to it, whichever the migrations recorded), then run `theurian migrate apply` again. "
+        "If the cycle holds more than one relation between the same two items, removing one "
+        "leaves the cycle and the next apply names another: repeat until the apply succeeds."
     )
 
 
