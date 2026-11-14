@@ -977,12 +977,13 @@ _ALIAS_CYCLES = [
 ]
 
 
-def _apply_steps(lock: Path, tmp_path: Path, steps: tuple[str, ...]) -> None:
-    def op(text: str) -> mg.Operation:
-        kind, *ids = text.split()
-        return _OPS[kind](*map(ItemId, ids))
+def _op(text: str) -> mg.Operation:
+    kind, *ids = text.split()
+    return _OPS[kind](*map(ItemId, ids))
 
-    ops = [tuple(op(t) for t in step.split(";")) for step in steps]
+
+def _apply_steps(lock: Path, tmp_path: Path, steps: tuple[str, ...]) -> None:
+    ops = [tuple(_op(t) for t in step.split(";")) for step in steps]
     migrations = tuple(
         Migration(
             MigrationId(f"01K1AAAAAA{i}1234567890ABCDE"), NOW, "e", o, ContentHash.of_text(f"{i}")
@@ -1011,6 +1012,27 @@ def test_an_alias_self_loop_names_its_stored_row_and_alias(tmp_path: Path, lock:
 
 def test_removing_the_row_the_message_lists_cures_the_cycle(tmp_path: Path, lock: Path) -> None:
     _apply_steps(lock, tmp_path, (*_LOOP, "unsup a x"))
+
+
+def test_an_alias_another_project_stores_closes_no_cycle_in_this_one(
+    tmp_path: Path, lock: Path
+) -> None:
+    """`_LOOP`'s two rows, one in each of two projects sharing the store."""
+    database, other = tmp_path / "s.sqlite", ProjectId("other")
+    create_database(database, state_hash="b" * 64, engine_version=1)
+
+    for project_id, step in ((other, "alias x a"), (PROJECT, "sup a x")):
+        with write_transaction(database, lock) as connection:
+            writer = SqliteWriter(connection)
+            writer.register_project(replace(_project(), project_id=project_id))
+            migration = Migration(MIGRATION, NOW, "e", (_op(step),), ContentHash.of_text(step))
+            MigrationEngine(FrozenClock(NOW), {}).apply(
+                writer, project_id, MigrationSet.ordered((migration,))
+            )
+
+    with closing(sqlite3.connect(database)) as raw:
+        stored = raw.execute("SELECT project_id, alias, item_id FROM knowledge_aliases").fetchall()
+    assert stored == [("other", "x", "a")]
 
 
 def _plant_an_undecodable_relation(database: Path, lock: Path) -> None:
