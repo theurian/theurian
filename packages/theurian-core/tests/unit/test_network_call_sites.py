@@ -254,7 +254,7 @@ NETWORK_CLIENT_SITES = {
 #: Every place in the shipped package that may start another program, in the same
 #: ``(module path under theurian/, the listed name it reaches)`` shape.
 #:
-#: Six modules. Five take no command from a document, and the sixth is the
+#: Seven modules. Six take no command from a document, and the seventh is the
 #: one this pin existed to make visible -- it reaches GitHub on purpose, and what
 #: bounds it is ADR-0030's clauses rather than the absence this file used to
 #: hold:
@@ -320,6 +320,13 @@ NETWORK_CLIENT_SITES = {
 #:   resolved to an absolute path -- ADR-0030 clause 5's tier, as its
 #:   ``committed_check.py`` sibling is, because this call gates a promotion
 #:   signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s).
+#: - ``infrastructure/git/first_parent_walk.py`` runs ``git rev-parse`` to read the root and
+#:   ``HEAD``, then ``rev-list``, ``diff-tree --stdin`` and ``log`` over the OID ``HEAD``
+#:   resolved to, for traceability collection (ADR-0040 decision 2). Local object storage
+#:   only, so not a network client. Its variable tokens are that OID, validated as hex first,
+#:   and a commit count; ``diff-tree``'s stdin is ``rev-list``'s validated OIDs. Absolute
+#:   binary (ADR-0030 clause 5's tier: the read gates a write), and ``trailer_source``'s
+#:   30-second ``GIT_TIMEOUT_SECONDS`` on each spawn.
 #: - ``infrastructure/git/trailer_source.py`` runs ``git log origin/main`` to read
 #:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
 #:   ``git fetch``, ``git log`` reads local object storage and the local
@@ -357,13 +364,14 @@ NETWORK_CLIENT_SITES = {
 #:     ``providers.review.repositories``, consulted before any process exists
 #:     (``test_review_allowlist.py``, ``test_gh_review_provider.py``).
 #:
-#: A **seventh** entry is what this pin still exists to make visible: a second
+#: An **eighth** entry is what this pin still exists to make visible: a second
 #: path to GitHub, or any other program started from a page nobody re-reads. The
 #: equality catches an addition *and* a removal, and the message below says what
 #: each direction means.
 PROCESS_SPAWN_SITES = {
     ("cli/context.py", "subprocess"),
     ("infrastructure/git/committed_check.py", "subprocess"),
+    ("infrastructure/git/first_parent_walk.py", "subprocess"),
     ("infrastructure/git/fix_commit_check.py", "subprocess"),
     ("infrastructure/git/trailer_source.py", "subprocess"),
     ("infrastructure/github/gh_cli.py", "asyncio.create_subprocess_exec"),
@@ -477,8 +485,8 @@ def test_the_mcp_tool_surface_composes_exactly_one_recorded_spawn_site() -> None
 
     :data:`PROCESS_SPAWN_SITES` answers *which modules may start a program*. It
     says nothing about **which of them a caller can reach**, and that is the
-    question this arm adds: five of the six are CLI-side and never see an MCP
-    caller's string, while the sixth is handed one on purpose.
+    question this arm adds: six of the seven are CLI-side and never see an MCP
+    caller's string, while the seventh is handed one on purpose.
 
     The class it ratchets is a measured one rather than a hypothetical. Before
     ``fix_commit_check``'s entry funnel, the caller's ``fixCommit`` was spent as
@@ -491,7 +499,7 @@ def test_the_mcp_tool_surface_composes_exactly_one_recorded_spawn_site() -> None
 
     **The premise is a discrimination, not a count.** A walk that resolved
     nothing would report zero spawn sites and read as perfect safety, and a walk
-    that returned every module in the package would report all six and read as
+    that returned every module in the package would report all seven and read as
     an alarm. So the closure is asserted to reach the entry module, to be
     substantial, and to *exclude* a recorded spawn site that the daemon's own
     composition root does reach -- ``cli/context.py``, imported by
