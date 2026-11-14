@@ -591,13 +591,17 @@ def _requires_git_objects(what: str) -> Index:
 #: one evidence file joined, so each of the three moved by one and ``tracked_paths``
 #: by three; the two item-level counts did not move, because the item already had
 #: more than one revision.
+#: Moved on 2026-11-14 by the ADR-0021 re-seed (#971): one migration, one body and
+#: one evidence file joined, so each of the three moved by one and ``tracked_paths``
+#: by three; the two item-level counts did not move, because the item already had
+#: more than one revision.
 EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "tracked_migrations": 59,
-        "bodies": 59,
-        "evidence_files": 59,
+        "tracked_migrations": 60,
+        "bodies": 60,
+        "evidence_files": 60,
         "gitkeep_placeholders": 3,
-        "tracked_paths": 180,
+        "tracked_paths": 183,
         "distinct_items": 26,
         "multi_revision_items": 17,
     }

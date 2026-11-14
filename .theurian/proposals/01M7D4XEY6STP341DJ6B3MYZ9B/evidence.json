@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M7D4XEY6STP341DJ6B3MYZ9B",
+  "migrationId": "01M7D4XEY6STP341DJ6B3MYZ9C",
+  "itemId": "architecture.rank-fusion-over-score-normalisation",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "971-reseed-adr-0021",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0021 at 59e9d4e7. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at 266e6b66, and 59e9d4e7 (#1013) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#971).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "59e9d4e79324a27fe51b8ad4655c0d1f621c6b44",
+      "filePath": "docs/adr/0021-rank-fusion-over-score-normalisation.md"
+    }
+  ]
+}

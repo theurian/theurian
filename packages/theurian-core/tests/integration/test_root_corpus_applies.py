@@ -331,7 +331,12 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # new body and the revision it replaced. `#979` counts 1 in the new body and 0 in
     # all four earlier corpus bodies and at every source commit before 502cd141.
     _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#979", 1),
-    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
+    # Re-measured 2026-11-14 for #971's re-seed: `"T-17a's"` counts 1 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `"#1000"`
+    # counts 1 in the new body and 0 in both earlier corpus bodies and at every
+    # source commit before 59e9d4e7; it is the issue reference of the "Corrected in
+    # place" note.
+    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "#1000", 1),
     # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
     # body and the revision it replaced. The test-name cite below counts 1 in the new
     # body and 0 in all four earlier corpus bodies and at every source commit before
