@@ -342,15 +342,13 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
         "`tests/integration/test_index_schema_v4.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`",
         1,
     ),
-    # Re-measured 2026-10-08 for #832's re-seed: `#464` counts 2 in both the new
-    # body and the revision it replaced. The path-qualified test-name cite counts 1
-    # in the new body and 0 in both earlier corpus bodies and at every source
-    # commit before 011441b3; the bare test name counts 1 at all of them.
-    _PayloadMarker(
-        ItemId("architecture.trigram-index-beside-the-word-index"),
-        "`tests/integration/test_index_fallback.py::test_a_missing_table_raises_instead_of_answering_nothing`",
-        1,
-    ),
+    # Re-measured 2026-11-11 for #971's re-seed: the path-qualified
+    # `test_a_missing_table_raises_instead_of_answering_nothing` cite counts 1 in
+    # both the new body and the revision it replaced, so it stopped discriminating.
+    # `#1000` counts 1 in the new body and 0 in all three earlier corpus bodies and
+    # at every source commit before 59e9d4e7; it is the issue reference of the
+    # "Corrected in place" note.
+    _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#1000", 1),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#499", 4),
     # Re-measured 2026-10-08 for #832's re-seed: `#553` counts 1 in both the new
     # body and the revision it replaced. "#832" counts 1 in the new body and 0 at
