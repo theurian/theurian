@@ -41,16 +41,23 @@ PIPELINE: Final = frozenset(
 )
 
 
-def _land_the_cycle(root: Path) -> None:
-    operations = "".join(
-        f"- op: addRelation\n  sourceItemId: {s}\n  relationType: {k}\n  targetItemId: {t}\n"
-        for s, k, t in CYCLE_ROWS
-    )
-    (root / ".theurian/migrations/01K1GGGGGG01234567890ABCDE-cycle.yaml").write_text(
-        "apiVersion: theurian.dev/v1\nid: 01K1GGGGGG01234567890ABCDE\n"
+def _write_migration(root: Path, migration_id: str, operations: str) -> None:
+    (root / f".theurian/migrations/{migration_id}-cycle.yaml").write_text(
+        f"apiVersion: theurian.dev/v1\nid: {migration_id}\n"
         "createdAt: 2026-11-04T10:00:00+09:00\nauthor: engineer@example.com\noperations:\n"
         + operations
     )
+
+
+def _relations(op: str, rows: tuple[tuple[str, str, str], ...]) -> str:
+    return "".join(
+        f"- op: {op}\n  sourceItemId: {s}\n  relationType: {k}\n  targetItemId: {t}\n"
+        for s, k, t in rows
+    )
+
+
+def _land_the_cycle(root: Path) -> None:
+    _write_migration(root, "01K1GGGGGG01234567890ABCDE", _relations("addRelation", CYCLE_ROWS))
 
 
 def _dump(database: Path) -> list[str]:
@@ -77,6 +84,58 @@ def test_migrate_apply_renders_the_cycle_and_the_remove_relation_remedy(
         "If the cycle holds more than one relation between the same two items, removing one "
         "leaves the cycle and the next apply names another: repeat until the apply succeeds."
     )
+
+
+ITERATION: Final = (
+    "If the cycle holds more than one relation between the same two items, removing one leaves "
+    "the cycle and the next apply names another: repeat until the apply succeeds."
+)
+
+
+@pytest.mark.parametrize(
+    ("aliases", "rows", "named"),
+    [
+        pytest.param(
+            ("backend.x", "backend.y"),
+            (("backend.a", "supersedes", "backend.b"),),
+            (("backend.b", "supersedes", "backend.x"), ("backend.b", "supersedes", "backend.y")),
+            id="parallel rows through two aliases",
+        ),
+        pytest.param(
+            ("backend.x",),
+            (("backend.b", "supersedes", "backend.x"),),
+            (("backend.a", "supersedes", "backend.b"), ("backend.b", "superseded_by", "backend.a")),
+            id="one pair stored as supersedes and as superseded_by",
+        ),
+    ],
+)
+def test_each_apply_names_the_next_row_of_a_step_until_the_step_has_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aliases: tuple[str, ...],
+    rows: tuple[tuple[str, str, str], ...],
+    named: tuple[tuple[str, str, str], ...],
+) -> None:
+    """The remedy's iteration (ADR-0040 decision 5, #1059 M-1): `named` is one step stored
+    twice, in the order successive applies list its rows."""
+    project = labelled_project(tmp_path, monkeypatch)
+    _write_migration(
+        project.root,
+        "01K1GGGGGG01234567890ABCDE",
+        "".join(f"- op: addAlias\n  alias: {x}\n  itemId: backend.a\n" for x in aliases)
+        + _relations("addRelation", (*rows, *named)),
+    )
+
+    for i, row in enumerate(named):
+        code, payload = cli("migrate", "apply")
+        assert (code, " ".join(row) in payload["error"]) == (4, True), payload
+        assert ITERATION in payload["remedy"]
+        _write_migration(
+            project.root, f"01K1HHHHH{i}01234567890ABCDE", _relations("removeRelation", (row,))
+        )
+    code, payload = cli("migrate", "apply")
+
+    assert code == 0, payload
 
 
 def test_an_apply_with_nothing_pending_refuses_a_planted_cycle_and_publishes_nothing(
