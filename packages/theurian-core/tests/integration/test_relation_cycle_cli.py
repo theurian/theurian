@@ -138,6 +138,43 @@ def test_each_apply_names_the_next_row_of_a_step_until_the_step_has_none(
     assert code == 0, payload
 
 
+def test_an_alias_free_cycle_is_refused_word_for_word_until_its_doubled_step_has_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alias-free message names items, not rows, so it is unchanged after one row of a step
+    stored twice is removed: that unchanged refusal is what the remedy's "repeat" is about."""
+    project = labelled_project(tmp_path, monkeypatch)
+    doubled = (
+        ("backend.a", "supersedes", "backend.b"),
+        ("backend.b", "superseded_by", "backend.a"),
+    )
+    closing_rows = (
+        ("backend.b", "supersedes", "backend.c"),
+        ("backend.c", "supersedes", "backend.a"),
+    )
+    _write_migration(
+        project.root,
+        "01K1GGGGGG01234567890ABCDE",
+        _relations("addRelation", (*doubled, *closing_rows)),
+    )
+
+    refusals = []
+    for i, row in enumerate(doubled):
+        refusals.append(cli("migrate", "apply"))
+        _write_migration(
+            project.root, f"01K1HHHHH{i}01234567890ABCDE", _relations("removeRelation", (row,))
+        )
+    cured = cli("migrate", "apply")
+
+    (first, before), (second, after) = refusals
+    assert (first, second, cured[0]) == (4, 4, 0), (before, after, cured)
+    assert before["error"].endswith(
+        "(INV-6): backend.a supersedes backend.b supersedes backend.c supersedes backend.a"
+    )
+    assert after["error"] == before["error"]
+    assert ITERATION in before["remedy"]
+
+
 def test_an_apply_with_nothing_pending_refuses_a_planted_cycle_and_publishes_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
