@@ -152,7 +152,7 @@ class RelationCycleError(MigrationError):
             "Write a new migration with a `removeRelation` for one "
             f"{'relation this cycle lists, exactly as listed' if through else relation}, then run "
             "`theurian migrate apply` again. If the cycle holds more than one relation between "
-            "the same two items, removing one leaves the cycle and the next apply names another: "
+            "the same two items, removing one leaves the cycle: "
             "repeat until the apply succeeds."
         )
 

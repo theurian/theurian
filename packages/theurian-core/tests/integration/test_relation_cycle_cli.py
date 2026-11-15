@@ -82,13 +82,13 @@ def test_migrate_apply_renders_the_cycle_and_the_remove_relation_remedy(
         "item of this cycle to the next (or for the `superseded_by` relation from the next item "
         "back to it, whichever the migrations recorded), then run `theurian migrate apply` again. "
         "If the cycle holds more than one relation between the same two items, removing one "
-        "leaves the cycle and the next apply names another: repeat until the apply succeeds."
+        "leaves the cycle: repeat until the apply succeeds."
     )
 
 
 ITERATION: Final = (
     "If the cycle holds more than one relation between the same two items, removing one leaves "
-    "the cycle and the next apply names another: repeat until the apply succeeds."
+    "the cycle: repeat until the apply succeeds."
 )
 
 

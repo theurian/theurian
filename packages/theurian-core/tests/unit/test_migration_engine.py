@@ -1169,8 +1169,7 @@ def test_the_remedy_names_the_relation_a_remove_relation_must_match(
     assert _refusal(rows).remedy == (
         f"Write a new migration with a `removeRelation` for {cure}, then run `theurian migrate "
         "apply` again. If the cycle holds more than one relation between the same two items, "
-        "removing one leaves the cycle and the next apply names another: repeat until the apply "
-        "succeeds."
+        "removing one leaves the cycle: repeat until the apply succeeds."
     )
 
 
