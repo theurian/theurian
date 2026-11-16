@@ -130,7 +130,13 @@ class RelationCycleError(MigrationError):
     by a new migration whose ``removeRelation`` breaks it, and the remedy says so.
 
     ``cycle`` lists each item once, in ``relation_type``'s direction, the last item
-    linking back to the first.
+    linking back to the first. Each entry is an id as stored, not resolved through an
+    alias: the source, in that direction, of one stored row per step -- for a stored
+    ``superseded_by`` row, the row's target.
+
+    ``through`` is empty when the cycle closes on the ids as stored. Otherwise it is that
+    row of each step, exactly as stored, then every alias row that joins ids of one of the
+    cycle's items.
     """
 
     def __init__(
