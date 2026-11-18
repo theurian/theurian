@@ -1,11 +1,12 @@
 """The sweep driver end to end, with the suite and the tracker stood in for (#378).
 
-Everything between the two boundaries is real here: the census walk over the
-production tree, the block the date selects, the generator, the spec file that is
-written to disk, the argv handed to the harness, the results document that is
-read back, and the payload that is printed or filed. Only the two expensive edges
+Everything between the two boundaries is real here: the census walk, the block
+the date selects, the generator, the spec file that is written to disk, the argv
+handed to the harness, the results document that is read back, and the payload
+that is printed or filed. Only the two expensive edges
 are injected -- ``tools/mutate.py`` (a full suite walk per mutation, tens of
-minutes) and ``gh`` (the network, and a token with issue-write scope).
+minutes) and ``gh`` (the network, and a token with issue-write scope). The tree
+the census walks is the fixture's own, not the repository's (see ``checkout``).
 
 The contract this pins is the one the workflow consumes:
 
@@ -32,6 +33,30 @@ import sweep_filing
 pytestmark = pytest.mark.integration
 
 _NIGHT = "2026-09-16"
+
+#: ``_NIGHT`` is run 105696, so over seven modules its block of two opens at
+#: (105696 * 2) % 7 = 6 and wraps to index 0; ``m3`` is the barren one.
+_MODULES = 7
+_BARREN = 3
+
+
+@pytest.fixture(autouse=True)
+def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A production tree of the test's own for the census to walk.
+
+    Drawn over the live census, measured at ``b4a341f0``: one empty module planted
+    under ``infrastructure/git/`` re-pointed ``_NIGHT``'s block onto two barren
+    files and turned 17 of this file's 31 tests RED.
+    """
+    root = tmp_path / "checkout"
+    production = root / sweep_census.CENSUS_ROOT
+    production.mkdir(parents=True)
+    for index in range(_MODULES):
+        body = "LIMIT = 0\n" if index == _BARREN else "def over(limit):\n    return limit > 0\n"
+        (production / f"m{index}.py").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(sweep, "REPO_ROOT", root)
+    monkeypatch.setattr(sweep, "census", lambda: sweep_census.census(root))
+    return root
 
 
 class _FakeMutate:
@@ -229,7 +254,7 @@ def test_a_finding_that_could_not_be_filed_fails_the_sweep(tmp_path: Path) -> No
 
 
 def test_the_spec_handed_to_the_harness_anchors_in_the_real_target_file(
-    tmp_path: Path,
+    tmp_path: Path, checkout: Path
 ) -> None:
     """The join between the generator and the harness, checked on the real file.
 
@@ -239,20 +264,19 @@ def test_the_spec_handed_to_the_harness_anchors_in_the_real_target_file(
     only check that the string which actually reaches the spec file still
     satisfies it against the file on disk.
 
-    The count is bounded rather than pinned: which two modules a block of two
-    draws is a function of the census, and a module added anywhere re-points it.
-    What is invariant is the budget -- at most one mutation per block member, so
-    never more entries than slots, one file each -- and that the spec is not
-    empty, which is what keeps the loop below from passing over nothing.
+    The files are pinned, which only a fixed census allows: index 6, then the wrap
+    to index 0. That also keeps the loop below from passing over nothing.
     """
     mutate, gh = _FakeMutate(), _FakeGh()
 
     sweep.main(_argv(tmp_path / "r.json"), mutate_runner=mutate, gh_runner=gh)
 
-    assert 1 <= len(mutate.spec) <= 2
-    assert len({entry["file"] for entry in mutate.spec}) == len(mutate.spec)
+    assert [entry["file"] for entry in mutate.spec] == [
+        f"{sweep_census.CENSUS_ROOT}/m6.py",
+        f"{sweep_census.CENSUS_ROOT}/m0.py",
+    ]
     for entry in mutate.spec:
-        source = (sweep_census.REPO_ROOT / entry["file"]).read_text(encoding="utf-8")
+        source = (checkout / entry["file"]).read_text(encoding="utf-8")
         assert source.count(entry["old"]) == 1, entry["label"]
         assert entry["old"] != entry["new"]
 
@@ -614,23 +638,18 @@ def test_the_run_reports_the_walks_it_will_spend_against_the_budget_it_has(
 
 
 def test_a_barren_block_member_is_announced_and_costs_the_run_no_walk(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], checkout: Path
 ) -> None:
     """The slot the single-target form could only express by advancing past it.
 
-    Driven with the whole census as one block, because that is the only way to
-    reach a barren member without pinning which modules a small block happens to
-    draw -- the census is recomputed every run, so any smaller fixture is one
-    added module away from drawing six productive files. 24 of the 142 modules
-    are barren, measured 2026-09-19 at ``92581f77``; a census with none at all
-    would fail this rather than silently passing over the branch, which is the
-    honest failure.
+    Driven with the whole census as one block, so the fixture's barren module is
+    a member whatever the date.
 
     The two assertions are the two halves: the run *says* the slot was barren,
     and the slot buys no walk -- the spec is one entry per productive member and
     the freed walk is not handed to another file's second question.
     """
-    census = sweep_census.census()
+    census = sweep_census.census(checkout)
     mutate, gh = _FakeMutate(), _FakeGh()
 
     sweep.main(
@@ -639,5 +658,5 @@ def test_a_barren_block_member_is_announced_and_costs_the_run_no_walk(
 
     printed = capsys.readouterr().out
     assert "barren" in printed
-    assert len(mutate.spec) < len(census)
-    assert f"budget    {1 + len(mutate.spec)} walk(s) of at most {1 + len(census)}" in printed
+    assert len(mutate.spec) == len(census) - 1
+    assert f"budget    {len(census)} walk(s) of at most {1 + len(census)}" in printed
