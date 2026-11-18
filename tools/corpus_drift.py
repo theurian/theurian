@@ -238,7 +238,7 @@ THIS_REPOSITORY: Final = "https://github.com/theurian/theurian.git"
 #:
 #: What it buys that ``NOTHING_COMPARED`` alone does not: that status fires only
 #: when the compared count reaches *zero*, so 25 of 26 anchors going uncheckable
-#: -- one re-seed at a time, each reported as a single notice on an advisory job
+#: -- one re-seed at a time, each reported as a single notice on a pull request's advisory run
 #: -- reads clean and exits 0 the whole way down.
 #:
 #: Inherited, and stated rather than rounded up: like its counterpart, this is a
@@ -1084,7 +1084,8 @@ def render_text(report: Report) -> str:
 def render_github(report: Report) -> tuple[str, ...]:
     """Workflow commands, so the findings land in the job log and on the PR.
 
-    Drift is a ``warning`` because this check is advisory (see ``--advisory``).
+    Drift is a ``warning`` on a pull request, where CI passes ``--advisory``; on a
+    push to ``main`` the same annotation accompanies exit 1.
     A run that compared nothing, or too little, is an ``error`` whatever the
     flags say: it is the outcome that must never read as green.
 
