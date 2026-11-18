@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M7D4XEY6STP341DJ6B3MYZ9C
+createdAt: '2026-11-14T13:45:55+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0021 twin from its current source: the corpus pins docs/adr/0021-rank-fusion-over-score-normalisation.md
+  as it stood at 266e6b66, and 59e9d4e7 (#1013) moved the tracked document since.'
+operations:
+- op: createItem
+  itemId: architecture.rank-fusion-over-score-normalisation
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.rank-fusion-over-score-normalisation
+  revisionId: 01M7D4XEY6STP341DJ6B3MYZ9D
+  expectedRevision: 01M1EVHMJXPXGD3H6NFXPBFHHC
+  contentFile: ../knowledge/architecture/rank-fusion-over-score-normalisation.01M7D4XEY6STP341DJ6B3MYZ9D.md
+  contentSha256: c4d7a054d07de39e0bb639b57fdf312f0f0ae4d91399dd92ea5078fae8b7accf
+  metadata:
+    title: 'ADR-0021: Fuse retrievers by rank, not by normalised score'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0021
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 59e9d4e79324a27fe51b8ad4655c0d1f621c6b44
+      filePath: docs/adr/0021-rank-fusion-over-score-normalisation.md

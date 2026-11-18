@@ -239,9 +239,9 @@ class _PayloadMarker:
 #: instance of that property rather than the only one, which matters because
 #: several items carry no ``#NNN`` whose count is unique to their current
 #: text; those are keyed on whatever token the same correction introduced -- a
-#: backticked identifier or test cite, a measured figure, an ADR number or a
-#: possessive phrase (``T-17a's``). How many is not recorded here -- it moves with
-#: every re-seed, and the entries below are the live answer.
+#: backticked identifier or test cite, a measured figure or an ADR number. How
+#: many is not recorded here -- it moves with every re-seed, and the entries below
+#: are the live answer.
 #:
 #: **The two twins that waited have landed.** ADR-0022
 #: (``architecture.index-lives-in-its-own-database``) and ADR-0024
@@ -331,7 +331,12 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # new body and the revision it replaced. `#979` counts 1 in the new body and 0 in
     # all four earlier corpus bodies and at every source commit before 502cd141.
     _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#979", 1),
-    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
+    # Re-measured 2026-11-14 for #971's re-seed: `T-17a's` counts 1 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `#1000`
+    # counts 1 in the new body and 0 in both earlier corpus bodies and at every
+    # source commit before 59e9d4e7; it is the issue reference of the "Corrected in
+    # place" note.
+    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "#1000", 1),
     # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
     # body and the revision it replaced. The test-name cite below counts 1 in the new
     # body and 0 in all four earlier corpus bodies and at every source commit before
