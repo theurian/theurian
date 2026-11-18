@@ -314,18 +314,18 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # revert of that block, coordinated across body, migration anchor and evidence,
     # moves the count to 0 and reddens this pin.
     _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "ADR-0030", 3),
-    # Re-measured 2026-10-08 for #832's re-seed: `#245` counts 1 in both the new
-    # body and the revision it replaced. `ADR-0039` counts 3 in the new body and 0
-    # at every earlier point (the two earlier corpus bodies and the source at each
-    # commit before e5f8f64f); all three sit in the closed-set amendment block.
-    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "ADR-0039", 3),
+    # Re-measured 2026-11-18 for #971's re-seed: `ADR-0039` counts 3 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `ADR-0040`
+    # counts 2 in the new body and 0 in all three earlier corpus bodies and at every
+    # source commit before 7976ba91.
+    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "ADR-0040", 2),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
-    # Re-measured 2026-10-20 for the #979 (#634) re-seed: `contentSha256` counts 1 in
-    # both the new body and the revision it replaced, so it stopped discriminating.
-    # `#979` counts 1 in the new body and 0 in all earlier corpus bodies and at every
-    # source commit before 502cd141; it sits in the compliance-section amendment block.
-    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "#979", 1),
+    # Re-measured 2026-11-18 for #971's re-seed: `#979` counts 1 in both the new body
+    # and the revision it replaced, so it stopped discriminating. `ADR-0040` counts 3
+    # in the new body and 0 in all three earlier corpus bodies and at every source
+    # commit before 145049a6.
+    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "ADR-0040", 3),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
     # Re-measured 2026-10-20 for the #979 (#634) re-seed: `#497` counts 1 in both the
     # new body and the revision it replaced. `#979` counts 1 in the new body and 0 in
