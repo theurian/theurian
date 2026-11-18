@@ -389,7 +389,8 @@ jobs:
   # `pull_request` adds `--advisory`; any other event, including one added
   # later, blocks.
   #
-  # The job also runs on every push, whatever the paths filter says. Measured on
+  # The job also runs on every event other than `pull_request`, whatever the
+  # paths filter says. Measured on
   # `main`'s run history: `dorny/paths-filter` diffs a push against the previous
   # commit, so the push run of `abe80186` (44214590589, uv.lock and pyproject
   # only) shows this job skipped, and `main` runs are cancelled by
@@ -406,7 +407,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.corpus == 'true'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.corpus == 'true'
     steps:
       # The default depth-1 clone is enough: the checker reads the index and the
       # working tree, never history. It does not need the `fetch-depth: 0` that

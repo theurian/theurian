@@ -328,7 +328,7 @@ does not fire on — is [#724](https://github.com/theurian/theurian/issues/724).
   assignment, opening the next — and merge anything green before dispatching new
   work.
 - At the same transition, read
-  `gh run list -R theurian/theurian --branch main --workflow shared.yml --limit 1`.
+  `gh run list -R theurian/theurian --branch main --event push --workflow shared.yml --limit 1`.
   Neither `gh pr list` nor a PR's checks sees a push-to-main run. If it
   concluded failure and the failing job is `Corpus drift`, name the drifted
   items from the job output in the report: the re-seed through `theurian propose`

@@ -238,7 +238,7 @@ THIS_REPOSITORY: Final = "https://github.com/theurian/theurian.git"
 #:
 #: What it buys that ``NOTHING_COMPARED`` alone does not: that status fires only
 #: when the compared count reaches *zero*, so 25 of 26 anchors going uncheckable
-#: -- one re-seed at a time, each reported as a single notice on a pull request's advisory run
+#: -- one re-seed at a time, each reported as a single notice
 #: -- reads clean and exits 0 the whole way down.
 #:
 #: Inherited, and stated rather than rounded up: like its counterpart, this is a
@@ -1159,11 +1159,12 @@ def exit_code(report: Report, *, advisory: bool) -> int:
     """0 clean, 1 drift, 2 too little compared. ``advisory`` suppresses only the 1.
 
     The asymmetry is the point. Drift is a maintenance signal on a normal
-    action -- somebody edited an ADR -- so failing the build on it would train
-    people to bypass the job. A run that compared nothing, or too little to mean
-    anything (:func:`held_to_floor`), is not a signal about the corpus at all;
-    it is this tool reporting that it has stopped working, and advisory mode
-    must not launder that into a pass.
+    action -- somebody edited an ADR -- so failing the pull request that carries
+    the edit would train people to bypass the job; on ``main``, failing is the
+    decision (the ``corpus-drift`` block in ``shared.yml``). A run that compared
+    nothing, or too little to mean anything (:func:`held_to_floor`), is not a
+    signal about the corpus at all; it is this tool reporting that it has
+    stopped working, and advisory mode must not launder that into a pass.
     """
     if report.status is Status.NOTHING_COMPARED:
         return 2

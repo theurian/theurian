@@ -12,13 +12,14 @@ depends on, and this file is where they are exercised for real:
   without ``--advisory`` on a push to ``main``), and carries neither
   ``continue-on-error: true`` nor ``|| true``, deliberately: either would
   swallow exit 2 alongside exit 1 and leave a green tick over a check that had
-  gone silent. Nothing else in the repository stops that, so the CLI's own
-  handling of exit 2 is the last guard. The compared-count floor reaches the
-  exit status through the same path and is mostly driven here with
-  ``--minimum-compared``, because the tool's own default binds only on this
-  repository's tree and none of these fixtures is that tree. One test drives the
-  *default* instead, by repointing ``corpus_drift.REPO_ROOT`` at a fixture so
-  that ``main`` with no flags at all takes the branch the CI job takes:
+  gone silent. ``tests/ci/test_corpus_drift_gate.py`` pins their absence, and
+  the CLI's own handling of exit 2 is what that absence protects. The
+  compared-count floor reaches the exit status through the same path and is
+  mostly driven here with ``--minimum-compared``, because the tool's own
+  default binds only on this repository's tree and none of these fixtures is
+  that tree. One test drives the *default* instead, by repointing
+  ``corpus_drift.REPO_ROOT`` at a fixture so that ``main`` with no flags at all
+  takes the branch the CI job takes:
   ``test_the_default_floor_binds_the_one_tree_its_number_was_measured_against``.
   Without it, ``minimum_compared_for(...)`` can be cut out of ``main`` and this
   whole suite stays green.

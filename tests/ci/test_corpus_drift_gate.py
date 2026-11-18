@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 SHARED = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows" / "shared.yml"
 
-JOB_IF = "github.event_name == 'push' || needs.changes.outputs.corpus == 'true'"
+JOB_IF = "github.event_name != 'pull_request' || needs.changes.outputs.corpus == 'true'"
 FLAGS = "${{ github.event_name == 'pull_request' && '--advisory' || '' }}"
 RUN = "uv run python tools/corpus_drift.py $DRIFT_FLAGS --format github --summary"
 

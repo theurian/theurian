@@ -3,9 +3,9 @@
 The asymmetry in :func:`corpus_drift.exit_code` is the whole operational
 argument for shipping this check as advisory (#263, commit 1d10b97): drift is a
 maintenance signal on a normal action -- somebody improved an ADR -- so failing
-the build on it trains people to bypass the job, while a run that compared
-nothing is not a signal about the corpus at all. It is the tool reporting that
-it has stopped working.
+the pull request that carries the ADR edit trains people to bypass the job,
+while a run that compared nothing is not a signal about the corpus at all. It
+is the tool reporting that it has stopped working.
 
 A single character makes those two collapse into each other. ``return 0 if
 advisory else 2`` in the ``NOTHING_COMPARED`` branch turns "the committed corpus
