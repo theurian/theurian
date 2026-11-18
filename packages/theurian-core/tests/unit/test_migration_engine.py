@@ -1148,6 +1148,18 @@ def test_a_cycle_an_alias_closes_lists_its_rows_as_stored_and_only_its_own_alias
     )
 
 
+def test_a_cycle_on_the_stored_ids_an_alias_also_joins_is_named_by_its_items() -> None:
+    """The guard's docstring once said a cycle an alias *joins* is named by its rows (#1081)."""
+    refused = _refusal([_rel("a", DEPENDS_ON, "b"), _rel("b", DEPENDS_ON, "a"), _alias("a", "b")])
+
+    assert (str(refused), refused.cycle) == (
+        "The knowledge relations form a depends_on cycle (INV-6): a depends_on b depends_on a",
+        (ItemId("a"), ItemId("b")),
+    )
+    assert "one `depends_on` relation from an item of this cycle to the next" in refused.remedy
+    assert "exactly as listed" not in refused.remedy
+
+
 @pytest.mark.parametrize(
     ("rows", "cure"),
     [

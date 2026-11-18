@@ -86,6 +86,36 @@ def test_migrate_apply_renders_the_cycle_and_the_remove_relation_remedy(
     )
 
 
+RENAMED: Final = "architecture.auth-policy-v2"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [(ITEM_ID, "depends_on", RENAMED), (RENAMED, "depends_on", ITEM_ID)],
+    ids=["old depends_on new", "new depends_on old"],
+)
+def test_migrate_apply_refuses_a_rename_whose_old_and_new_ids_share_a_depends_on_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: tuple[str, str, str]
+) -> None:
+    """migrations.md's rename section: the alias makes the two ids one item, so the row is a
+    cycle of one."""
+    project = labelled_project(tmp_path, monkeypatch)
+    _write_migration(
+        project.root,
+        "01K1GGGGGG01234567890ABCDE",
+        f"- op: createItem\n  itemId: {RENAMED}\n  kind: architecture\n  namespace: backend\n"
+        "  owner: platform-team\n"
+        + _relations("addRelation", (row,))
+        + f"- op: deprecateItem\n  itemId: {ITEM_ID}\n  reason: renamed\n"
+        f"- op: addAlias\n  alias: {ITEM_ID}\n  itemId: {RENAMED}\n",
+    )
+
+    code, payload = cli("migrate", "apply")
+
+    assert code == 4, payload
+    assert "depends_on cycle (INV-6)" in payload["error"]
+
+
 ITERATION: Final = (
     "If the cycle holds more than one relation between the same two items, removing one leaves "
     "the cycle: repeat until the apply succeeds."
