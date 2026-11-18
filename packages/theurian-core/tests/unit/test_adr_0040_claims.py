@@ -485,6 +485,18 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
         "one with nothing pending, so a cyclic set built by a non-enforcing Core is refused at "
         "its next apply.",
     ),
+    "the guard's reach sentence": (
+        "### 5. ",
+        "The guard is in the engine, so the error reaches every CLI site that replays a set: "
+        "the first key below prints six wiring sites, five of them reachable, and each surfaces "
+        "the error its own way:",
+    ),
+    "the unreachable sixth site": (
+        "### 5. ",
+        "The sixth, `okf_commands.py:382`'s rehearsal, is unreachable: `okf import` holds its "
+        "service through `DraftOnlyProposals`, whose `__slots__` are the two draft entries, and "
+        "of `ProposalService`'s public methods only `accept` reaches `self._rehearse`.",
+    ),
     "the sequencing predicate": (
         "### 5. ",
         "Under that condition, every state an enforcing Core serves or applies into was built "
@@ -634,6 +646,7 @@ ABSENT: Final = (
     "#1033 and #1034 learn this record must move",
     "and decision 5's guard have no fact side",
     "is the only source file with a def of either method",
+    "by the CLI's proposal-accept rehearsal",
 )
 ROUND_LABEL: Final = re.compile(r"(?<![-\w])R[1-3]\b|\(\(c\)")
 FILES: Final = {"ADR-0040": ADR, "roadmap": ROADMAP, "ADR-0016": ADR_0016, "ADR-0039": ADR_0039}

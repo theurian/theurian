@@ -1038,6 +1038,13 @@ is safe to shadow with its own alias. This passes:
     itemId: architecture.auth-policy
 ```
 
+**INV-6 still refuses a rename whose old and new ids share a `supersedes`,
+`superseded_by` or `depends_on` row**, in either direction and whichever
+migration wrote it: the alias makes the two ids one item, so that row is a cycle
+of one, and `migrate apply` exits 4 with
+[`RelationCycleError`](#errors-you-will-actually-hit). A `supersededBy` on the
+rename's own `deprecateItem` that names the new id writes such a row.
+
 `migrate status` does not refuse — its contract is observation, not a gate — but
 names every colliding migration under `refusedIds`, exactly as it does for the
 tenant/ACL and one-body-one-revision rules above.
@@ -1193,6 +1200,7 @@ flowchart TD
     style T fill:#8a2f2f,color:#fff
     style V fill:#8a2f2f,color:#fff
     style X fill:#8a2f2f,color:#fff
+    style Z fill:#8a2f2f,color:#fff
     style L fill:#8a6f2f,color:#fff
     style R fill:#1f6f4a,color:#fff
 ```
@@ -1252,7 +1260,7 @@ scanning a directory listing and may be changed freely.
 | `DuplicateContentFileError` | Two different revisions name one `contentFile` | Give the later revision a body file of its own under `.theurian/knowledge/` and point that migration at it; pin both with `contentSha256` while you are there. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
 | `UnenforceableScopeError` | A revision named a `tenantId` other than `local` or an `aclGroup` other than `default` | Edit it to the default. **Unless the revision was already applied** — then the fix above does not apply; see [Upgrading a project that already applied one of these](#upgrading-a-project-that-already-applied-one-of-these), and do not use this row's checksum-error advice as a substitute (issue #63). |
 | `AliasItemCollisionError` | An `addAlias` key equals the id of an item whose final status is not `deprecated` | Remove the `addAlias`, or give the item a distinct id — an alias key and an item id must not be the same string. If it is a rename, deprecate the old item first (`deprecateItem`), the one shape this allows. **If that migration was already applied**, the edit also trips the checksum guard above — delete `.theurian/state/` after the edit and run `theurian migrate apply`, which rebuilds canonical state from the corrected migrations (FR-K4). |
-| `RelationCycleError` | The relations the apply leaves form a `supersedes` (or inverse `superseded_by`) or `depends_on` cycle, counting ids an alias joins as one item (INV-6) | Write a new migration with a `removeRelation` for one relation of the cycle, as the remedy names it. A [rename](#an-alias-key-is-not-an-item-id-t-21) whose `deprecateItem` also sets `supersededBy` to the alias's target is such a cycle; if that migration is not applied yet, delete the `supersededBy` instead. |
+| `RelationCycleError` | The relations the apply leaves form a `supersedes` (or inverse `superseded_by`) or `depends_on` cycle, counting ids an alias joins as one item (INV-6) | Write a new migration with a `removeRelation` for one relation of the cycle, as the remedy names it. If the cycle holds more than one relation between the same two items, removing one leaves the cycle: repeat until the apply succeeds. A [rename](#an-alias-key-is-not-an-item-id-t-21) whose `deprecateItem` also sets `supersededBy` to the alias's target is such a cycle; if that migration is not applied yet, delete the `supersededBy` instead. |
 
 ## Related
 

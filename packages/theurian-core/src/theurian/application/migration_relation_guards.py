@@ -28,11 +28,12 @@ def refuse_relation_cycles(rows: Collection[KnowledgeRelation | KnowledgeAlias])
     """Raise on the first cycle, graphs and items visited in sorted order.
 
     Ids the alias map connects, at any depth, are one node: a served read resolves aliases.
-    Literal ids go first, so only a cycle an alias joins is named by its rows as stored,
+    Literal ids go first, so only a cycle an alias closes is named by its rows as stored,
     which is what ``removeRelation`` deletes.
 
     Raises:
-        RelationCycleError: Naming the graph's relation type and the cycle's items.
+        RelationCycleError: Naming the graph's relation type and one stored id per step
+            of the cycle; ``through`` is empty when the cycle closes on the ids as stored.
     """
     aliases = dict(
         sorted((a.alias.value, a.item_id.value) for a in rows if isinstance(a, KnowledgeAlias))
@@ -67,6 +68,9 @@ def refuse_relation_cycles(rows: Collection[KnowledgeRelation | KnowledgeAlias])
                 steps = [min(graphs[graph][a][b]) for a, b in pairwise((*cycle, cycle[0]))]
                 nodes = set(cycle)
                 joined = [f"alias {a} -> {t}" for a, t in aliases.items() if node.get(a) in nodes]
+                # `joined` is empty exactly on the literal pass, which has no `node` map. A
+                # cycle the alias pass finds is one the literal pass did not, so it passes
+                # through a component an alias joins.
                 through = (*(text for text, _ in steps), *joined) if joined else ()
                 raise RelationCycleError(graph, tuple(ItemId(s) for _, s in steps), through)
 

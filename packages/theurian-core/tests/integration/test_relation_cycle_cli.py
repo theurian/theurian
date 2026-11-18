@@ -20,7 +20,14 @@ from typing import Final
 
 import pytest
 from adr_0039_support import SRC, _named, _scoped
-from label_inheritance_support import ITEM_ID, cli, labelled_project
+from label_inheritance_support import (
+    ITEM_ID,
+    cli,
+    cli_propose,
+    labelled_project,
+    landing_zone,
+    proposals_tree,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -34,16 +41,23 @@ PIPELINE: Final = frozenset(
 )
 
 
-def _land_the_cycle(root: Path) -> None:
-    operations = "".join(
-        f"- op: addRelation\n  sourceItemId: {s}\n  relationType: {k}\n  targetItemId: {t}\n"
-        for s, k, t in CYCLE_ROWS
-    )
-    (root / ".theurian/migrations/01K1GGGGGG01234567890ABCDE-cycle.yaml").write_text(
-        "apiVersion: theurian.dev/v1\nid: 01K1GGGGGG01234567890ABCDE\n"
+def _write_migration(root: Path, migration_id: str, operations: str) -> None:
+    (root / f".theurian/migrations/{migration_id}-cycle.yaml").write_text(
+        f"apiVersion: theurian.dev/v1\nid: {migration_id}\n"
         "createdAt: 2026-11-04T10:00:00+09:00\nauthor: engineer@example.com\noperations:\n"
         + operations
     )
+
+
+def _relations(op: str, rows: tuple[tuple[str, str, str], ...]) -> str:
+    return "".join(
+        f"- op: {op}\n  sourceItemId: {s}\n  relationType: {k}\n  targetItemId: {t}\n"
+        for s, k, t in rows
+    )
+
+
+def _land_the_cycle(root: Path) -> None:
+    _write_migration(root, "01K1GGGGGG01234567890ABCDE", _relations("addRelation", CYCLE_ROWS))
 
 
 def _dump(database: Path) -> list[str]:
@@ -66,8 +80,129 @@ def test_migrate_apply_renders_the_cycle_and_the_remove_relation_remedy(
     assert payload["remedy"] == (
         "Write a new migration with a `removeRelation` for one `supersedes` relation from an "
         "item of this cycle to the next (or for the `superseded_by` relation from the next item "
-        "back to it, whichever the migrations recorded), then run `theurian migrate apply` again."
+        "back to it, whichever the migrations recorded), then run `theurian migrate apply` again. "
+        "If the cycle holds more than one relation between the same two items, removing one "
+        "leaves the cycle: repeat until the apply succeeds."
     )
+
+
+RENAMED: Final = "architecture.auth-policy-v2"
+
+
+@pytest.mark.parametrize(
+    "row",
+    [(ITEM_ID, "depends_on", RENAMED), (RENAMED, "depends_on", ITEM_ID)],
+    ids=["old depends_on new", "new depends_on old"],
+)
+def test_migrate_apply_refuses_a_rename_whose_old_and_new_ids_share_a_depends_on_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: tuple[str, str, str]
+) -> None:
+    """migrations.md's rename section: the alias makes the two ids one item, so the row is a
+    cycle of one."""
+    project = labelled_project(tmp_path, monkeypatch)
+    _write_migration(
+        project.root,
+        "01K1GGGGGG01234567890ABCDE",
+        f"- op: createItem\n  itemId: {RENAMED}\n  kind: architecture\n  namespace: backend\n"
+        "  owner: platform-team\n"
+        + _relations("addRelation", (row,))
+        + f"- op: deprecateItem\n  itemId: {ITEM_ID}\n  reason: renamed\n"
+        f"- op: addAlias\n  alias: {ITEM_ID}\n  itemId: {RENAMED}\n",
+    )
+
+    code, payload = cli("migrate", "apply")
+
+    assert code == 4, payload
+    assert "depends_on cycle (INV-6)" in payload["error"]
+
+
+ITERATION: Final = (
+    "If the cycle holds more than one relation between the same two items, removing one leaves "
+    "the cycle: repeat until the apply succeeds."
+)
+
+
+@pytest.mark.parametrize(
+    ("aliases", "rows", "named"),
+    [
+        pytest.param(
+            ("backend.x", "backend.y"),
+            (("backend.a", "supersedes", "backend.b"),),
+            (("backend.b", "supersedes", "backend.x"), ("backend.b", "supersedes", "backend.y")),
+            id="parallel rows through two aliases",
+        ),
+        pytest.param(
+            ("backend.x",),
+            (("backend.b", "supersedes", "backend.x"),),
+            (("backend.a", "supersedes", "backend.b"), ("backend.b", "superseded_by", "backend.a")),
+            id="one pair stored as supersedes and as superseded_by",
+        ),
+    ],
+)
+def test_each_apply_names_the_next_row_of_a_step_until_the_step_has_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    aliases: tuple[str, ...],
+    rows: tuple[tuple[str, str, str], ...],
+    named: tuple[tuple[str, str, str], ...],
+) -> None:
+    """The remedy's iteration (ADR-0040 decision 5, #1059 M-1): `named` is one step stored
+    twice, in the order successive applies list its rows."""
+    project = labelled_project(tmp_path, monkeypatch)
+    _write_migration(
+        project.root,
+        "01K1GGGGGG01234567890ABCDE",
+        "".join(f"- op: addAlias\n  alias: {x}\n  itemId: backend.a\n" for x in aliases)
+        + _relations("addRelation", (*rows, *named)),
+    )
+
+    for i, row in enumerate(named):
+        code, payload = cli("migrate", "apply")
+        assert (code, " ".join(row) in payload["error"]) == (4, True), payload
+        assert ITERATION in payload["remedy"]
+        _write_migration(
+            project.root, f"01K1HHHHH{i}01234567890ABCDE", _relations("removeRelation", (row,))
+        )
+    code, payload = cli("migrate", "apply")
+
+    assert code == 0, payload
+
+
+def test_an_alias_free_cycle_is_refused_word_for_word_until_its_doubled_step_has_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The alias-free message names items, not rows, so it is unchanged after one row of a step
+    stored twice is removed: that unchanged refusal is what the remedy's "repeat" is about."""
+    project = labelled_project(tmp_path, monkeypatch)
+    doubled = (
+        ("backend.a", "supersedes", "backend.b"),
+        ("backend.b", "superseded_by", "backend.a"),
+    )
+    closing_rows = (
+        ("backend.b", "supersedes", "backend.c"),
+        ("backend.c", "supersedes", "backend.a"),
+    )
+    _write_migration(
+        project.root,
+        "01K1GGGGGG01234567890ABCDE",
+        _relations("addRelation", (*doubled, *closing_rows)),
+    )
+
+    refusals = []
+    for i, row in enumerate(doubled):
+        refusals.append(cli("migrate", "apply"))
+        _write_migration(
+            project.root, f"01K1HHHHH{i}01234567890ABCDE", _relations("removeRelation", (row,))
+        )
+    cured = cli("migrate", "apply")
+
+    (first, before), (second, after) = refusals
+    assert (first, second, cured[0]) == (4, 4, 0), (before, after, cured)
+    assert before["error"].endswith(
+        "(INV-6): backend.a supersedes backend.b supersedes backend.c supersedes backend.a"
+    )
+    assert after["error"] == before["error"]
+    assert ITERATION in before["remedy"]
 
 
 def test_an_apply_with_nothing_pending_refuses_a_planted_cycle_and_publishes_nothing(
@@ -112,7 +247,49 @@ def test_migrate_validate_marks_the_cycle_unavailable_while_apply_refuses_it(
     assert CYCLE in applied[1]["error"]
 
 
-#: The tests above render the first two; the other four are the proposal service's.
+def _assert_names_migrate_apply_not_the_set_edits(payload: dict[str, str]) -> None:
+    assert CYCLE in payload["error"]
+    assert "migrate apply" in payload["remedy"]
+    assert "break the dependency cycle" not in payload["remedy"]
+    assert "fix the migration set" not in payload["remedy"]
+
+
+def test_propose_over_a_landed_cycle_refuses_with_the_cycle_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proposal service's `current_item_in` site: a refusal that says nothing was
+    written must leave `.theurian/proposals` as it was, and name `migrate apply`."""
+    project = labelled_project(tmp_path, monkeypatch)
+    _land_the_cycle(project.root)
+    before = proposals_tree(project.root)
+
+    code, payload = cli_propose(project, ITEM_ID)
+
+    assert code == 2, payload
+    _assert_names_migrate_apply_not_the_set_edits(payload)
+    assert proposals_tree(project.root) == before
+
+
+def test_accept_over_a_landed_cycle_refuses_with_the_cycle_and_moves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proposal service's `rehearse_migration_set` site: the cycle is the landed set's,
+    not the proposal's, and a refused accept leaves its directory intact."""
+    project = labelled_project(tmp_path, monkeypatch)
+    code, drafted = cli_propose(project, "architecture.new-item")
+    assert code == 0, drafted
+    _land_the_cycle(project.root)
+    before = landing_zone(project.root)
+
+    code, payload = cli("propose", "accept", drafted["proposalId"])
+
+    assert code == 4, payload
+    _assert_names_migrate_apply_not_the_set_edits(payload)
+    assert landing_zone(project.root) == before
+
+
+#: The tests above render the first four sites in `SITES` (`migrate apply` and `validate`,
+#: and `propose_commands.py`'s two); the okf pair is rendered by none.
 SITES: Final = {
     ("commands.py", "migrate_apply", "apply_migration_set"),
     ("commands.py", "_permissive_move_fields", "permissive_moves_in"),

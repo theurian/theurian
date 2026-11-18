@@ -129,8 +129,15 @@ class RelationCycleError(MigrationError):
     cured by editing them. Applied migrations are frozen, so a relation cycle is cured
     by a new migration whose ``removeRelation`` breaks it, and the remedy says so.
 
-    ``cycle`` lists each item once, in ``relation_type``'s direction, the last item
-    linking back to the first.
+    ``cycle`` lists one entry per step, in ``relation_type``'s direction, the last step
+    leading back to the first entry's item. Each entry is an id as stored, not resolved
+    through an alias: the source, in that direction, of one stored row per step -- for a
+    stored ``superseded_by`` row, the row's target. When the cycle closes on the ids as
+    stored, two or more entries can be ids of one item.
+
+    ``through`` is empty when the cycle closes on the ids as stored. Otherwise it is that
+    row of each step, exactly as stored, then every alias row that joins ids of one of the
+    cycle's items.
     """
 
     def __init__(
@@ -151,7 +158,9 @@ class RelationCycleError(MigrationError):
         self.remedy = (
             "Write a new migration with a `removeRelation` for one "
             f"{'relation this cycle lists, exactly as listed' if through else relation}, then run "
-            "`theurian migrate apply` again."
+            "`theurian migrate apply` again. If the cycle holds more than one relation between "
+            "the same two items, removing one leaves the cycle: "
+            "repeat until the apply succeeds."
         )
 
 
