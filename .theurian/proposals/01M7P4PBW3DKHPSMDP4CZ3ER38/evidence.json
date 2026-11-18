@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M7P4PBW3DKHPSMDP4CZ3ER38",
+  "migrationId": "01M7P4PBW3DKHPSMDP4CZ3ER39",
+  "itemId": "architecture.yaml-knowledge-migrations",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "971-reseed-adr-0005",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0005 at 7976ba91. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at f6b8a874, and 7976ba91 (#1059) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#971).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "7976ba9137e21255783d0bde3c0c510ac12a5c0e",
+      "filePath": "docs/adr/0005-yaml-knowledge-migrations.md"
+    }
+  ]
+}
