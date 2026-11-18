@@ -544,6 +544,7 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # named exists here and touched the file a stored review thread is anchored
         # to; it names no store, and the findings one is a different arm again.
         "git/fix_commit_check.py",
+        "git/first_parent_walk.py",
         # The `gh` review-ingestion adapter (ADR-0030). It reads GitHub and
         # returns `ReviewEvent`/`ReviewThread`/`ReviewSubmission` evidence; the
         # findings store is a different arm entirely -- `Review-Finding:` trailers
