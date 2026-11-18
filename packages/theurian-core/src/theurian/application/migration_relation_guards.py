@@ -32,8 +32,8 @@ def refuse_relation_cycles(rows: Collection[KnowledgeRelation | KnowledgeAlias])
     which is what ``removeRelation`` deletes.
 
     Raises:
-        RelationCycleError: Naming the graph's relation type and the cycle's items as
-            stored ids; ``through`` is empty when the cycle closes on the ids as stored.
+        RelationCycleError: Naming the graph's relation type and one stored id per step
+            of the cycle; ``through`` is empty when the cycle closes on the ids as stored.
     """
     aliases = dict(
         sorted((a.alias.value, a.item_id.value) for a in rows if isinstance(a, KnowledgeAlias))
