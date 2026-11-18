@@ -27,9 +27,12 @@ FLAGS = "${{ github.event_name == 'pull_request' && '--advisory' || '' }}"
 RUN = "uv run python tools/corpus_drift.py $DRIFT_FLAGS --format github --summary"
 
 
+def _document() -> dict[Any, Any]:
+    return cast(dict[Any, Any], yaml.safe_load(SHARED.read_text(encoding="utf-8")))
+
+
 def _job() -> dict[str, Any]:
-    document = cast(dict[str, Any], yaml.safe_load(SHARED.read_text(encoding="utf-8")))
-    return cast(dict[str, Any], document["jobs"]["corpus-drift"])
+    return cast(dict[str, Any], _document()["jobs"]["corpus-drift"])
 
 
 def _drift_step() -> dict[str, Any]:
@@ -43,16 +46,25 @@ def test_the_drift_step_is_advisory_only_on_pull_request() -> None:
 
     assert step["env"] == {"DRIFT_FLAGS": FLAGS}
     assert step["run"] == RUN
-    assert "--advisory" not in step["run"]
+
+
+def test_the_drift_step_carries_no_key_that_could_skip_or_swallow_it() -> None:
+    """An `if:` or `continue-on-error` on the step skips or swallows a push run."""
+    assert set(_drift_step()) == {"name", "env", "run"}
 
 
 def test_the_job_runs_on_every_push_and_on_a_pull_request_only_behind_the_filter() -> None:
     assert _job()["if"] == JOB_IF
 
 
-def test_nothing_swallows_the_drift_exit_code() -> None:
-    job, step = _job(), _drift_step()
+def test_the_job_does_not_swallow_its_exit_code() -> None:
+    assert "continue-on-error" not in _job()
 
-    assert "continue-on-error" not in job
-    assert "continue-on-error" not in step
-    assert "||" not in step["run"]
+
+def test_a_push_to_main_still_triggers_the_workflow_and_reaches_the_job() -> None:
+    """A skipped `changes` job skips `corpus-drift`; `on:` parses as the key `True`."""
+    document = _document()
+
+    assert document[True]["push"]["branches"] == ["main"]
+    assert _job()["needs"] == "changes"
+    assert "if" not in document["jobs"]["changes"]
