@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 import pytest
-import typer.main
+import typer
 import yaml
 from adr_0037_support import collapsed, revision
 from adr_0039_support import (
@@ -35,12 +35,14 @@ from adr_0039_support import (
 )
 from jsonschema import ValidationError
 from threat_model_claims import WORD_FOR_COUNT
+from typer.testing import CliRunner, Result
 
 from theurian.application.migration_engine import (
     verify_no_applied_migration_changed,
     verify_no_applied_migration_removed,
 )
 from theurian.application.okf_import import ImportedConcept, ImportRefusal, _map_concept
+from theurian.cli import propose_commands
 from theurian.cli.propose_commands import propose_app
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
@@ -316,15 +318,45 @@ def test_closed_value_names_the_field_and_the_valid_set_but_not_the_value() -> N
     assert _closed_value(KnowledgeKind, "domain", "kind") is KnowledgeKind.DOMAIN
 
 
-def test_propose_kind_is_refused_at_option_parsing_naming_the_value_and_the_valid_set() -> None:
-    [option] = [p for p in typer.main.get_command(propose_app).params if p.name == "kind"]
+def test_propose_kind_is_refused_at_option_parsing_naming_the_value_and_the_valid_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Message and param measured through CliRunner on typer 0.29.1: typer 0.29
+    # validates with Pydantic, hence the "Value error, " prefix.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "data"))
+    drafted: list[object] = []
+    monkeypatch.setattr(propose_commands, "_draft", lambda inputs, **_: drafted.append(inputs))
+    (tmp_path / "body.md").write_text("Body.\n", encoding="utf-8")
     valid = ", ".join(repr(member.value) for member in KnowledgeKind)
 
-    with pytest.raises(typer.BadParameter) as refused:
-        option.type.convert("requirement", option, None)
+    def invoke(kind: str) -> Result:
+        args = [
+            "--item-id", "01K1AAAAAAAAAAAAAAAAAAAAAA",
+            "--title", "A title",
+            "--kind", kind,
+            "--owner", "owner",
+            "--author", "author",
+            "--description", "A description",
+            "--body-file", "body.md",
+            "--agent-id", "agent",
+            "--task-id", "task",
+            "--model", "model",
+            "--reasoning", "reason",
+        ]  # fmt: skip
+        return CliRunner().invoke(propose_app, args, standalone_mode=False)
 
-    assert option.opts == ["--kind"]
-    assert str(refused.value) == f"'requirement' is not one of {valid}."
+    refused = invoke("requirement")
+    assert drafted == []
+    accepted = invoke("domain")
+
+    assert isinstance(refused.exception, typer.BadParameter)
+    assert refused.exception.param is not None
+    assert refused.exception.param.opts == ["--kind"]
+    assert str(refused.exception) == f"Value error, 'requirement' is not one of {valid}."
+    assert len(drafted) == 1
+    assert accepted.exception is None
 
 
 def test_okf_import_refuses_a_concept_of_an_unknown_type_on_its_own(tmp_path: Path) -> None:
