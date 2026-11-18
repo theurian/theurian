@@ -1,6 +1,7 @@
 """The environment every deciding ``git`` spawn runs under (ADR-0029 D7, ADR-0033).
 
-Shared by the trailer read, the fixCommit verdict and the migration committed check (#981).
+Shared by the trailer read, the fixCommit verdict, the migration committed check (#981), the
+first-parent walk and the project-root discovery.
 With each spawn's own flags it neutralises every documented git feature that can make a deciding
 read admit what this repository's own objects do not, except two that are tracked: an
 attribute-driven conversion on the committed check (#1015) and, below git 2.45, the fetch child's
