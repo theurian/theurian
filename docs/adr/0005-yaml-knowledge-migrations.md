@@ -63,6 +63,12 @@ Rules the engine enforces:
 7. Every referenced source file's checksum is verified.
 8. Applying all migrations to an empty store reproduces the full canonical state.
 
+> **Amended in Phase C, by [ADR-0040](0040-traceability-representation-and-edge-sources.md)
+> ([#1033](https://github.com/theurian/theurian/issues/1033)).** Rule 5 is scope
+> over applied migrations: re-applying one applies none of its operations
+> again, while every apply still runs ADR-0040 decision 5's INV-6 guard over
+> the relations the project holds, which no guarded apply leaves cyclic.
+
 The operation set is closed: `createItem`, `upsertRevision`, `deprecateItem`,
 `restoreItem`, `addRelation`, `removeRelation`, `addAlias`, `removeAlias`,
 `changeSensitivity`, `changeOwner`, `registerSpecification`,

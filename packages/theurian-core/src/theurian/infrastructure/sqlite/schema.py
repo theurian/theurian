@@ -55,7 +55,15 @@ from urllib.parse import quote
 #: `ValidityPeriod` on every entity that carries one), so dropping the
 #: redundant SQL `CHECK` removes a false refusal without opening a write path
 #: the domain does not already gate.
-SCHEMA_VERSION: Final = 4
+#:
+#: **5** adds `traceability_edges.source_commit` and the edge walk's record on
+#: `schema_metadata` -- ADR-0040 decision 4's DDL, so #1033's collector lands
+#: without a v6 -- in the one commit that adds `MigrationEngine.apply`'s whole-set
+#: INV-6 guard (decision 5). The pairing is that decision's sequencing condition: a
+#: v4 state may hold a relation cycle no guard checked, and the bump is what keeps a
+#: guarded build from opening or reusing one (decision 5, *Why the guard ships with
+#: schema v5*).
+SCHEMA_VERSION: Final = 5
 
 #: Applied to every connection. `foreign_keys` is per-connection in SQLite, not
 #: per-database, so forgetting it on one connection silently disables referential
@@ -184,12 +192,26 @@ DDL: Final = """
 -- Schema identity -----------------------------------------------------------
 -- Stored inside the database as well as encoded in its filename, so a mismatch
 -- is detectable even if the file is renamed or copied (ADR-0017).
+--
+-- The `walk_` columns are the edge walk's commit and boundary (ADR-0040
+-- decisions 2 and 4): part of a state's identity beside `state_hash`, recorded
+-- rather than hashed. All null when no walk ran -- no repository root, an unborn
+-- HEAD; with a walk both flags are set, and a digest is null when there is
+-- nothing to digest (a full clone, no capped commit).
 CREATE TABLE schema_metadata (
-    id              INTEGER PRIMARY KEY CHECK (id = 1),
-    schema_version  INTEGER NOT NULL,
-    engine_version  INTEGER NOT NULL,
-    state_hash      TEXT    NOT NULL,
-    created_at      TEXT    NOT NULL
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    schema_version      INTEGER NOT NULL,
+    engine_version      INTEGER NOT NULL,
+    state_hash          TEXT    NOT NULL,
+    created_at          TEXT    NOT NULL,
+    walk_commit         TEXT,
+    walk_shallow_digest TEXT,
+    walk_depth_bounded  INTEGER CHECK (walk_depth_bounded IN (0, 1)),
+    walk_budget_bounded INTEGER CHECK (walk_budget_bounded IN (0, 1)),
+    walk_capped_digest  TEXT,
+    CHECK ((walk_commit IS NULL) = (walk_depth_bounded IS NULL)),
+    CHECK ((walk_commit IS NULL) = (walk_budget_bounded IS NULL)),
+    CHECK (walk_commit IS NOT NULL OR (walk_shallow_digest IS NULL AND walk_capped_digest IS NULL))
 );
 
 -- Projects ------------------------------------------------------------------
@@ -383,6 +405,8 @@ CREATE TABLE specifications (
     PRIMARY KEY (project_id, spec_id)
 );
 
+-- `source_commit` is the commit an edge was measured against (ADR-0040 decision
+-- 4): `evidence` holds it too, but as JSON that SQL cannot index or compare.
 CREATE TABLE traceability_edges (
     edge_id       TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
@@ -394,6 +418,7 @@ CREATE TABLE traceability_edges (
     evidence      TEXT NOT NULL DEFAULT '[]',
     confidence    REAL NOT NULL,
     created_at    TEXT NOT NULL,
+    source_commit TEXT NOT NULL,
     CHECK (confidence BETWEEN 0.0 AND 1.0)
 );
 

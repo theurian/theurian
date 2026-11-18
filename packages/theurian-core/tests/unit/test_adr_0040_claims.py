@@ -3,8 +3,8 @@
 ADR-0040 ships no code, so each sentence it states about the repository was
 measured once, at ``5ad30799``. A *fact* pin recomputes it from live source or
 schema and goes RED when the tree moves; a *prose* pin goes RED when the record
-drifts. A dated fact's failure message names #1033 or #1034 and the sentence to
-update.
+drifts. A dated fact's failure message names #1033 and the sentence to update;
+one standing since #1033, the sentence it holds.
 
 **Reach.** Each key, beside the claim it holds:
 
@@ -19,16 +19,24 @@ update.
   ``ingest_command``'s own body spells; a read through a function it calls is
   outside the key.
 - *Callers of ``must_be_acyclic``* are source lines under ``src`` matching
-  ``\\.must_be_acyclic([^a-z_]|$)``; a call through an alias is outside it.
+  ``\\.must_be_acyclic([^a-z_]|$)``; a call through an alias is outside it. The
+  function each call sits in, and the guard's own caller, are read as calls in
+  the syntax tree.
 - *Adapters of the edge port* are source lines under ``src`` outside
-  ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``.
+  ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``,
+  and the top-level classes of ``infrastructure/sqlite/store.py`` whose own body
+  has a ``def`` or an ``async def`` by either name, read from the syntax tree.
 - *Append-only* is ADR-0016 and ADR-0039 against ``5ad30799``: every base line
-  survives in order, nothing follows the last one but ``Amendment 1``, and every
-  run of lines inserted before it opens with ``*Amended in Amendment`` and is indented
-  throughout (an indented stray line beside a marker passes).
+  survives in order, what follows the last one opens with a blank line and
+  ``## Amendment 1`` and is not read further (ADR-0039's Amendment 2 is in it), and
+  every run of lines inserted before it opens with ``*Amended in Amendment`` and is
+  indented throughout (an indented stray line beside a marker passes).
+- *The claims-pin bullet's counts* are this module's own ``STANDING.format`` and
+  ``DATED.format`` calls, read from its syntax tree: how many of the first, the
+  second's ``issue=`` values, and the ``F<n>`` labels its ``where=`` values spell.
 
-Decision 2's identity and digests, 3(c)'s cap and decision 5's guard have no fact
-side until #1033 builds them.
+Decision 2's identity and digests and 3(c)'s cap have no fact side until #1033
+builds them.
 """
 
 from __future__ import annotations
@@ -246,29 +254,72 @@ def test_the_schema_bump_and_inv_6_enforcement_land_together() -> None:
     )
 
 
-# --- Fact pins: dated --------------------------------------------------------
+# --- Fact pins: standing since #1033 (decisions 4 and 5, the edge adapter) ---
+
+STANDING: Final = "ADR-0040 {where} states {sentence!r}, and the tree no longer does."
 
 
-def test_the_schema_version_is_four() -> None:
-    assert SCHEMA_VERSION == 4, DATED.format(
-        where="F6", issue=1033, sentence="F6's 'SCHEMA_VERSION is 4' and decision 4"
+def _columns(table: str) -> list[tuple[str, str, int]]:
+    """Each column's name, declared type and NOT NULL flag, in declaration order."""
+    connection = _database()
+    columns = [
+        (row[1], row[2], row[3]) for row in connection.execute(f"PRAGMA table_info({table})")
+    ]
+    connection.close()
+    return columns
+
+
+def _calls_anywhere(name: str) -> set[tuple[str, str]]:
+    return {(relative, scope) for relative in _trees() for scope in _callers(relative, name)}
+
+
+def test_the_schema_version_is_five() -> None:
+    assert SCHEMA_VERSION == 5, STANDING.format(
+        where="decision 4", sentence="These are DDL changes, so `SCHEMA_VERSION` goes from 4 to 5."
     )
 
 
-def test_schema_metadata_has_the_columns_it_had_at_the_base() -> None:
-    assert _tables()["schema_metadata"] == {
-        "id",
-        "schema_version",
-        "engine_version",
-        "state_hash",
-        "created_at",
-    }, DATED.format(where="decision 4", issue=1033, sentence="decision 4's `schema_metadata` gains")
-
-
-def test_traceability_edges_has_no_source_commit_column() -> None:
-    assert "source_commit" not in _tables()["traceability_edges"], DATED.format(
-        where="F6", issue=1033, sentence="F6's 'has no source_commit column'"
+def test_schema_metadata_has_the_walk_record_columns() -> None:
+    assert _columns("schema_metadata") == [
+        ("id", "INTEGER", 0),
+        ("schema_version", "INTEGER", 1),
+        ("engine_version", "INTEGER", 1),
+        ("state_hash", "TEXT", 1),
+        ("created_at", "TEXT", 1),
+        ("walk_commit", "TEXT", 0),
+        ("walk_shallow_digest", "TEXT", 0),
+        ("walk_depth_bounded", "INTEGER", 0),
+        ("walk_budget_bounded", "INTEGER", 0),
+        ("walk_capped_digest", "TEXT", 0),
+    ], STANDING.format(
+        where="decision 4",
+        sentence="`schema_metadata` gains decision 2's walk commit and boundary — the shallow "
+        "digest, the depth and budget flags and the capped digest — all null with no walk.",
     )
+
+
+def test_traceability_edges_has_a_source_commit_column() -> None:
+    assert [c for c in _columns("traceability_edges") if c[0] == "source_commit"] == [
+        ("source_commit", "TEXT", 1)
+    ], STANDING.format(
+        where="decision 4", sentence="`traceability_edges` gains `source_commit TEXT NOT NULL`"
+    )
+
+
+def test_must_be_acyclic_has_one_caller_under_src() -> None:
+    guard = STANDING.format(
+        where="decision 5", sentence="Enforcement is a whole-set guard in the migration engine"
+    )
+
+    assert [c.rpartition(":")[0] for c in _acyclic_callers(SRC)] == [
+        "application/migration_relation_guards.py"
+    ], guard
+    assert _calls_anywhere("must_be_acyclic") == {
+        ("application/migration_relation_guards.py", "refuse_relation_cycles")
+    }, guard
+    assert _calls_anywhere("refuse_relation_cycles") == {
+        ("application/migration_engine.py", "apply")
+    }, guard
 
 
 _PORT_KEY: Final = re.compile(r"def (add_traceability_edge|list_traceability_edges)[(]")
@@ -282,21 +333,35 @@ def _port_definitions(root: Path) -> list[Path]:
     ]
 
 
-def test_no_adapter_defines_the_edge_port_methods() -> None:
-    """The key without the exclusion finds the port itself, which is its positive control."""
+def test_the_sqlite_store_is_the_one_adapter_of_the_edge_port() -> None:
+    """The key without the exclusion finds the port itself, which is its positive control.
+
+    Each method is named by its verb: ADR-0038 Amendment 3 says no file but the round-trip
+    test spells either one, which ``test_adr_0038_populations.py`` holds over attributes, bare
+    names and exact strings.
+    """
     everywhere = _port_definitions(SRC)
     adapters = [path for path in everywhere if "domain/ports/" not in path.as_posix()]
+    defined = {
+        (owner.name, method.name.partition("_")[0])
+        for owner in _trees()["infrastructure/sqlite/store.py"].body
+        if isinstance(owner, ast.ClassDef)
+        for method in owner.body
+        if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef)
+        and _PORT_KEY.fullmatch(f"def {method.name}(")
+    }
+    adapter = STANDING.format(
+        where="Compliance",
+        sentence="Landed from item 1 below in #1033's edge-adapter pull request: the SQLite "
+        "adapter for both port methods",
+    )
 
     assert Path("domain/ports/canonical_store.py") in everywhere
-    assert not adapters, DATED.format(
-        where="F5", issue=1033, sentence="F5's 'No adapter implements the edge port'"
-    )
+    assert adapters == [Path("infrastructure/sqlite/store.py")], adapter
+    assert defined == {("SqliteWriter", "add"), ("SqliteCanonicalStore", "list")}, adapter
 
 
-def test_must_be_acyclic_has_no_caller_under_src() -> None:
-    assert not _acyclic_callers(SRC), DATED.format(
-        where="F8", issue=1033, sentence="F8's 'has no caller in src' and decision 5"
-    )
+# --- Fact pins: dated --------------------------------------------------------
 
 
 _GIT_LOG_AND_STATE: Final = frozenset(
@@ -332,6 +397,29 @@ def test_ingest_imports_no_git_log_adapter_and_opens_no_state_database() -> None
     )
 
 
+# --- Fact pin: the claims-pin bullet's counts --------------------------------
+
+
+def _format_calls(template: str) -> list[dict[str | None, ast.expr]]:
+    """The keywords of each ``template.format`` call in this module."""
+    return [
+        {keyword.arg: keyword.value for keyword in node.keywords}
+        for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == f"{template}.format"
+    ]
+
+
+def test_the_claims_pin_bullet_counts_this_modules_standing_and_dated_sites() -> None:
+    """The bullet said every other fact was dated after five pins here became standing."""
+    dated = _format_calls("DATED")
+    named = {f for call in dated for f in re.findall(r"\bF\d+\b", ast.unparse(call["where"]))}
+    bullet = "ADR-0040 Compliance's claims-pin bullet states these counts; update it with this pin"
+
+    assert len(_format_calls("STANDING")) == 5, bullet
+    assert {ast.literal_eval(call["issue"]) for call in dated} == {1033}, bullet
+    assert named == {"F10"}, bullet
+
+
 # --- Prose pins: present -----------------------------------------------------
 
 PRESENT: Final[dict[str, tuple[str, str]]] = {
@@ -349,7 +437,7 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
     "the shallow digest derivation": (
         "### 2. ",
         "The shallow digest is the lowercase hex SHA-256 of the clone's shallow-commit list — "
-        "the shas in the file git rev-parse --git-path shallow names, sorted byte-wise, each "
+        "the lines of the file git rev-parse --git-path shallow names, sorted byte-wise, each "
         "followed by a newline — and null when no such file exists, which is a full clone.",
     ),
     "the capped digest derivation": (
@@ -397,6 +485,18 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
         "one with nothing pending, so a cyclic set built by a non-enforcing Core is refused at "
         "its next apply.",
     ),
+    "the guard's reach sentence": (
+        "### 5. ",
+        "The guard is in the engine, so the error reaches every CLI site that replays a set: "
+        "the first key below prints six wiring sites, five of them reachable, and each surfaces "
+        "the error its own way:",
+    ),
+    "the unreachable sixth site": (
+        "### 5. ",
+        "The sixth, `okf_commands.py:382`'s rehearsal, is unreachable: `okf import` holds its "
+        "service through `DraftOnlyProposals`, whose `__slots__` are the two draft entries, and "
+        "of `ProposalService`'s public methods only `accept` reaches `self._rehearse`.",
+    ),
     "the sequencing predicate": (
         "### 5. ",
         "Under that condition, every state an enforcing Core serves or applies into was built "
@@ -431,6 +531,25 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
         "build: 393 units in 200 files, read at every match (FR-K8's row is a second match). "
         "The 25 units it finds false are listed, file by file, under [#1033's Sentences this "
         "slice falsifies](https://github.com/theurian/theurian/issues/1033#sentences-this-slice-falsifies);",
+    ),
+    "the edge adapter's landing": (
+        "## Compliance",
+        "Landed from item 1 below in #1033's edge-adapter pull request: the SQLite adapter for "
+        "both port methods, which nothing under packages/theurian-core/src calls yet.",
+    ),
+    "the claims pin's dated facts": (
+        "## Compliance",
+        "the rest are dated, and only F10's has a fact side. Its failure message names #1033, as "
+        "the census units' below do; none names #1034.",
+    ),
+    "the claims pin's standing facts": (
+        "## Compliance",
+        "Since #1033 the pin also holds five sentences outside *Context* as standing",
+    ),
+    "the edge adapter's one source file": (
+        "## Compliance",
+        "test_the_sqlite_store_is_the_one_adapter_of_the_edge_port, by the key its module "
+        "docstring states;",
     ),
 }
 
@@ -523,6 +642,11 @@ ABSENT: Final = (
     "never by time",
     "fault refusal only",
     "not a timeout",
+    "every other fact is dated",
+    "#1033 and #1034 learn this record must move",
+    "and decision 5's guard have no fact side",
+    "is the only source file with a def of either method",
+    "by the CLI's proposal-accept rehearsal",
 )
 ROUND_LABEL: Final = re.compile(r"(?<![-\w])R[1-3]\b|\(\(c\)")
 FILES: Final = {"ADR-0040": ADR, "roadmap": ROADMAP, "ADR-0016": ADR_0016, "ADR-0039": ADR_0039}
@@ -612,9 +736,11 @@ def test_the_append_only_check_refuses_a_deleted_a_reordered_and_a_trailing_line
 
 #: ADR-0040 Compliance's census at 5ad30799 finds these 25 (file, phrase) units false once
 #: decision 2's write and decision 5's guard land; the list is #1033's *Sentences this slice
-#: falsifies*, rows 1-25 in order. Each phrase occurs in its file exactly as many times as it is
-#: listed. Rows 1-3 sit in governed ADRs, which are amended and never trimmed, so their count
-#: changes only when an amendment writes the phrase again, or splits a wrapped phrase with a marker.
+#: falsifies*, rows 1-25 in order. A phrase occurs in its file exactly as many times as it is
+#: listed, except the AMENDED rows, whose sentence #1033's docs step rewrote: those occur 0 times,
+#: so a falsified sentence that comes back goes red. Rows 1-3 sit in governed ADRs, which are
+#: amended and never trimmed, so their count changes only when an amendment writes the phrase
+#: again, or splits a wrapped phrase with a marker.
 FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
     ("docs/adr/0005-yaml-knowledge-migrations.md", "Re-application is a no-op"),
     (
@@ -659,15 +785,23 @@ FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
+AMENDED: Final[frozenset[int]] = frozenset({4, 6, 8, 20})
+
+
 @pytest.mark.parametrize(
-    ("path", "phrase"), FALSIFIED, ids=[f"row-{n}" for n in range(1, len(FALSIFIED) + 1)]
+    ("row", "path", "phrase"),
+    [(n, *unit) for n, unit in enumerate(FALSIFIED, 1)],
+    ids=[f"row-{n}" for n in range(1, len(FALSIFIED) + 1)],
 )
-def test_each_sentence_1033_amends_is_still_in_its_file(path: str, phrase: str) -> None:
-    """The seam moved the list out of the ADR on the premise that this pin holds it."""
-    wanted = FALSIFIED.count((path, phrase))
+def test_each_sentence_1033_amends_is_still_in_its_file(row: int, path: str, phrase: str) -> None:
+    """The seam moved the list out of the ADR on the premise that this pin holds it.
+
+    An AMENDED row holds the phrase absent: the falsified sentence returning is the failure.
+    """
+    wanted = 0 if row in AMENDED else FALSIFIED.count((path, phrase))
 
     assert _text(REPO_ROOT / path).count(collapsed(phrase)) == wanted, DATED.format(
         where=f"the census unit in {path}",
         issue=1033,
-        sentence=f"'{phrase}' there and this pin's FALSIFIED row with it",
+        sentence=f"'{phrase}' there ({wanted}x) and this pin's FALSIFIED row with it",
     )

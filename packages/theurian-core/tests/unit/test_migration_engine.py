@@ -1,16 +1,20 @@
 """Migration engine guarantees (ADR-0005, ADR-0006).
 
 The four properties that make the canonical store trustworthy: an applied
-migration is frozen, conflicts are reported rather than merged, re-application
-is a no-op, and ordering is deterministic.
+migration is frozen, conflicts are reported rather than merged, re-applying an
+applied migration applies none of its operations again, and ordering is
+deterministic. Every apply also runs INV-6's guard over the relations the
+project holds (ADR-0040 decision 5).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast, override
 
 import pytest
 from fakes import FrozenClock, InMemoryWriter
+from visit_counting import CountsIterations
 
 from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import (
@@ -27,7 +31,9 @@ from theurian.application.migration_engine import (
     verify_no_applied_migration_changed,
     verify_no_applied_migration_removed,
 )
+from theurian.application.migration_relation_guards import _first_cycle, refuse_relation_cycles
 from theurian.domain.enums import (
+    ACYCLIC_RELATIONS,
     KnowledgeKind,
     KnowledgeStatus,
     RelationType,
@@ -43,11 +49,12 @@ from theurian.domain.errors import (
     MigrationDependencyMissingError,
     MigrationError,
     MigrationHistoryMissingError,
+    RelationCycleError,
     RevisionConflictError,
     UnenforceableScopeError,
 )
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
-from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.knowledge import KnowledgeAlias, KnowledgeRelation, SourceAnchor
 from theurian.domain.migration import (
     AddAlias,
     AddRelation,
@@ -56,6 +63,7 @@ from theurian.domain.migration import (
     DeprecateItem,
     Migration,
     MigrationSet,
+    RemoveRelation,
     RestoreItem,
     RevisionMetadataSpec,
     UpsertRevision,
@@ -971,6 +979,252 @@ def test_relations_are_deduplicated() -> None:
 
     matching = [r for r in writer.relations if r.target_item_id == target]
     assert len(matching) == 1
+
+
+# -- INV-6: the relation set an apply leaves (ADR-0040 decision 5) ----------
+#
+# No length-1 case: `KnowledgeRelation` refuses a self-relation at construction
+# (`test_self_relation_is_rejected`) and `knowledge_relations` CHECKs it too.
+
+SUCCESSOR = ItemId("architecture.auth-policy-v2")
+SUPERSEDES, SUPERSEDED_BY, DEPENDS_ON = (
+    RelationType.SUPERSEDES,
+    RelationType.SUPERSEDED_BY,
+    RelationType.DEPENDS_ON,
+)
+
+
+def _add(source: ItemId, kind: RelationType, target: ItemId) -> AddRelation:
+    return AddRelation(source_item_id=source, relation_type=kind, target_item_id=target)
+
+
+def _apply_after_the_item(*migrations: tuple[object, ...]) -> InMemoryWriter:
+    writer = InMemoryWriter()
+    pending = (
+        _create_and_upsert(MIG_1, REV_1, BODY_V1),
+        *(_migration(m, *ops) for m, ops in zip((MIG_2, MIG_3), migrations, strict=False)),
+    )
+    _engine(BODY_V1).apply(writer, PROJECT, MigrationSet.ordered(pending))
+    return writer
+
+
+@pytest.mark.parametrize(
+    ("operations", "graph"),
+    [
+        pytest.param(
+            (_add(ITEM, SUPERSEDES, SUCCESSOR), _add(ITEM, SUPERSEDED_BY, SUCCESSOR)),
+            SUPERSEDES,
+            id="the two stored directions of supersession",
+        ),
+        pytest.param(
+            (_add(ITEM, DEPENDS_ON, SUCCESSOR), _add(SUCCESSOR, DEPENDS_ON, ITEM)),
+            DEPENDS_ON,
+            id="depends_on",
+        ),
+        pytest.param(
+            (
+                DeprecateItem(item_id=ITEM, superseded_by=SUCCESSOR),
+                _add(ITEM, SUPERSEDES, SUCCESSOR),
+            ),
+            SUPERSEDES,
+            id="through deprecateItem.supersededBy",
+        ),
+    ],
+)
+def test_an_apply_leaving_a_cycle_inv_6_forbids_is_refused(
+    operations: tuple[object, ...], graph: RelationType
+) -> None:
+    with pytest.raises(RelationCycleError) as refused:
+        _apply_after_the_item(operations)
+
+    assert (refused.value.relation_type, refused.value.cycle) == (graph, (ITEM, SUCCESSOR))
+
+
+@pytest.mark.parametrize(
+    ("migrations", "left"),
+    [
+        pytest.param(
+            ((_add(ITEM, SUPERSEDES, SUCCESSOR), _add(SUCCESSOR, DEPENDS_ON, ITEM)),),
+            {(ITEM, SUPERSEDES, SUCCESSOR), (SUCCESSOR, DEPENDS_ON, ITEM)},
+            id="a loop mixing the two graphs",
+        ),
+        pytest.param(
+            (
+                (_add(ITEM, DEPENDS_ON, SUCCESSOR), _add(SUCCESSOR, DEPENDS_ON, ITEM)),
+                (
+                    RemoveRelation(
+                        source_item_id=SUCCESSOR, relation_type=DEPENDS_ON, target_item_id=ITEM
+                    ),
+                ),
+            ),
+            {(ITEM, DEPENDS_ON, SUCCESSOR)},
+            id="a later migration's removeRelation",
+        ),
+    ],
+)
+def test_an_apply_leaving_no_forbidden_cycle_is_not_refused(
+    migrations: tuple[tuple[object, ...], ...], left: set[tuple[ItemId, RelationType, ItemId]]
+) -> None:
+    """A mixed loop breaks neither reason `ACYCLIC_RELATIONS` records, and the guard
+    reads the set after every pending migration, so a later one can cure a cycle."""
+    writer = _apply_after_the_item(*migrations)
+
+    assert {(r.source_item_id, r.relation_type, r.target_item_id) for r in writer.relations} == left
+
+
+def test_the_reported_cycle_does_not_depend_on_the_order_relations_arrive_in() -> None:
+    """Graphs, starts and successors are each visited sorted, and this set offers a
+    choice at every one: two graphs, dependency cycles from two starts (`m`, `x`),
+    and two successors at the first start (`n`, `p`) and at the next node (`m`, `q`)."""
+    edges = [("m", "n"), ("m", "p"), ("n", "m"), ("n", "q"), ("p", "m"), ("q", "m")]
+    relations = [
+        KnowledgeRelation(PROJECT, ItemId(source), kind, ItemId(target), NOW)
+        for kind, pairs in (
+            (DEPENDS_ON, [*edges, ("x", "y"), ("y", "x")]),
+            (SUPERSEDES, [("a", "b"), ("b", "a")]),
+        )
+        for source, target in pairs
+    ]
+    orders = [relations[i:] + relations[:i] for i in range(len(relations))]
+
+    verdicts = set()
+    for order in [*orders, *(order[::-1] for order in orders)]:
+        with pytest.raises(RelationCycleError) as refused:
+            refuse_relation_cycles(order)
+        verdicts.add((refused.value.relation_type, refused.value.cycle))
+
+    assert verdicts == {(DEPENDS_ON, (ItemId("m"), ItemId("n")))}
+
+
+def _rel(source: str, kind: RelationType, target: str) -> KnowledgeRelation:
+    return KnowledgeRelation(PROJECT, ItemId(source), kind, ItemId(target), NOW)
+
+
+def _alias(alias: str, item: str) -> KnowledgeAlias:
+    return KnowledgeAlias(ItemId(alias), ItemId(item), PROJECT, NOW)
+
+
+def _refusal(rows: list[KnowledgeRelation | KnowledgeAlias]) -> RelationCycleError:
+    with pytest.raises(RelationCycleError) as refused:
+        refuse_relation_cycles(rows)
+    return refused.value
+
+
+def test_a_diamond_whose_branches_meet_again_is_not_a_cycle() -> None:
+    refuse_relation_cycles([_rel(s, DEPENDS_ON, t) for s, t in ("ab", "ac", "bd", "cd")])
+
+
+def test_a_cycle_reached_through_a_lead_in_names_only_the_cycles_items() -> None:
+    refused = _refusal([_rel(s, DEPENDS_ON, t) for s, t in ("ab", "bc", "cb")])
+
+    assert (str(refused), refused.cycle) == (
+        "The knowledge relations form a depends_on cycle (INV-6): b depends_on c depends_on b",
+        (ItemId("b"), ItemId("c")),
+    )
+
+
+@pytest.mark.parametrize("kind", sorted(set(RelationType) - ACYCLIC_RELATIONS))
+def test_a_cycle_of_a_relation_type_inv_6_does_not_govern_is_not_refused(
+    kind: RelationType,
+) -> None:
+    refuse_relation_cycles([_rel("a", kind, "b"), _rel("b", kind, "a")])
+
+
+def test_a_cycle_an_alias_closes_lists_its_rows_as_stored_and_only_its_own_aliases() -> None:
+    """`cycle` holds each step's literal source in the `supersedes` direction: `x`, not `a`."""
+    refused = _refusal(
+        [
+            _rel("x", SUPERSEDES, "b"),
+            _rel("a", SUPERSEDED_BY, "b"),
+            _alias("x", "a"),
+            _alias("z", "q"),
+        ]
+    )
+
+    assert (str(refused), refused.cycle) == (
+        "The knowledge relations form a supersedes cycle (INV-6): "
+        "x supersedes b, a superseded_by b, alias x -> a",
+        (ItemId("x"), ItemId("b")),
+    )
+
+
+def test_a_cycle_on_the_stored_ids_an_alias_also_joins_is_named_by_its_items() -> None:
+    """The guard's docstring once said a cycle an alias *joins* is named by its rows (#1081)."""
+    refused = _refusal([_rel("a", DEPENDS_ON, "b"), _rel("b", DEPENDS_ON, "a"), _alias("a", "b")])
+
+    assert (str(refused), refused.cycle) == (
+        "The knowledge relations form a depends_on cycle (INV-6): a depends_on b depends_on a",
+        (ItemId("a"), ItemId("b")),
+    )
+    assert "one `depends_on` relation from an item of this cycle to the next" in refused.remedy
+    assert "exactly as listed" not in refused.remedy
+
+
+@pytest.mark.parametrize(
+    ("rows", "cure"),
+    [
+        pytest.param(
+            [_rel("a", DEPENDS_ON, "b"), _rel("b", DEPENDS_ON, "a")],
+            "one `depends_on` relation from an item of this cycle to the next",
+            id="depends_on, which has no inverse",
+        ),
+        pytest.param(
+            [_rel("a", SUPERSEDES, "x"), _alias("x", "a")],
+            "one relation this cycle lists, exactly as listed",
+            id="a cycle an alias closes",
+        ),
+    ],
+)
+def test_the_remedy_names_the_relation_a_remove_relation_must_match(
+    rows: list[KnowledgeRelation | KnowledgeAlias], cure: str
+) -> None:
+    assert _refusal(rows).remedy == (
+        f"Write a new migration with a `removeRelation` for {cure}, then run `theurian migrate "
+        "apply` again. If the cycle holds more than one relation between the same two items, "
+        "removing one leaves the cycle: repeat until the apply succeeds."
+    )
+
+
+def test_the_cycle_search_reads_each_nodes_successors_once() -> None:
+    """Linear in the relation rows (#1059 M4): a chain of k diamonds holds 2**k paths, so a
+    search that re-enters a finished node, or restarts from one, reads a node twice."""
+    k = 8
+    edges = {f"d{i:02d}": CountsIterations([f"l{i:02d}", f"r{i:02d}"]) for i in range(k)}
+    edges |= {
+        f"{side}{i:02d}": CountsIterations([f"d{i + 1:02d}"]) for i in range(k) for side in "lr"
+    }
+
+    assert _first_cycle(cast("dict[str, list[str]]", edges)) is None
+    assert {node: listed.iterations for node, listed in edges.items()} == dict.fromkeys(edges, 1)
+
+
+def _ids_hashed_guarding(aliases: list[tuple[str, str]]) -> int:
+    hashed = 0
+
+    class Counted(str):
+        __slots__ = ()
+
+        @override
+        def __hash__(self) -> int:
+            nonlocal hashed
+            hashed += 1
+            return super().__hash__()
+
+    rows = [
+        KnowledgeAlias(ItemId(Counted(a)), ItemId(Counted(t)), PROJECT, NOW) for a, t in aliases
+    ]
+    refuse_relation_cycles(rows)
+    return hashed
+
+
+def test_the_guards_work_grows_linearly_in_a_chain_of_aliases() -> None:
+    """Path halving (#1059 M-d): the sorted unions build this chain one link deeper each, so
+    a `find` that does not shorten the path it walks quadruples the count when n doubles."""
+    chain = [(f"a{i:04d}", f"a{i + 1:04d}") for i in range(1000)]
+
+    small, large = _ids_hashed_guarding(chain[:500]), _ids_hashed_guarding(chain)
+
+    assert large < 3 * small, (small, large)
 
 
 # -- Planning --------------------------------------------------------------

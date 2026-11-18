@@ -239,9 +239,9 @@ class _PayloadMarker:
 #: instance of that property rather than the only one, which matters because
 #: several items carry no ``#NNN`` whose count is unique to their current
 #: text; those are keyed on whatever token the same correction introduced -- a
-#: backticked identifier or test cite, a measured figure, an ADR number or a
-#: possessive phrase (``T-17a's``). How many is not recorded here -- it moves with
-#: every re-seed, and the entries below are the live answer.
+#: backticked identifier or test cite, a measured figure or an ADR number. How
+#: many is not recorded here -- it moves with every re-seed, and the entries below
+#: are the live answer.
 #:
 #: **The two twins that waited have landed.** ADR-0022
 #: (``architecture.index-lives-in-its-own-database``) and ADR-0024
@@ -314,24 +314,29 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # revert of that block, coordinated across body, migration anchor and evidence,
     # moves the count to 0 and reddens this pin.
     _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "ADR-0030", 3),
-    # Re-measured 2026-10-08 for #832's re-seed: `#245` counts 1 in both the new
-    # body and the revision it replaced. `ADR-0039` counts 3 in the new body and 0
-    # at every earlier point (the two earlier corpus bodies and the source at each
-    # commit before e5f8f64f); all three sit in the closed-set amendment block.
-    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "ADR-0039", 3),
+    # Re-measured 2026-11-18 for #971's re-seed: `ADR-0039` counts 3 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `ADR-0040`
+    # counts 2 in the new body and 0 in all three earlier corpus bodies and at every
+    # source commit before 7976ba91.
+    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "ADR-0040", 2),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
-    # Re-measured 2026-10-20 for the #979 (#634) re-seed: `contentSha256` counts 1 in
-    # both the new body and the revision it replaced, so it stopped discriminating.
-    # `#979` counts 1 in the new body and 0 in all earlier corpus bodies and at every
-    # source commit before 502cd141; it sits in the compliance-section amendment block.
-    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "#979", 1),
+    # Re-measured 2026-11-18 for #971's re-seed: `#979` counts 1 in both the new body
+    # and the revision it replaced, so it stopped discriminating. `ADR-0040` counts 3
+    # in the new body and 0 in all three earlier corpus bodies and at every source
+    # commit before 145049a6.
+    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "ADR-0040", 3),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
     # Re-measured 2026-10-20 for the #979 (#634) re-seed: `#497` counts 1 in both the
     # new body and the revision it replaced. `#979` counts 1 in the new body and 0 in
     # all four earlier corpus bodies and at every source commit before 502cd141.
     _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#979", 1),
-    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
+    # Re-measured 2026-11-14 for #971's re-seed: `T-17a's` counts 1 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `#1000`
+    # counts 1 in the new body and 0 in both earlier corpus bodies and at every
+    # source commit before 59e9d4e7; it is the issue reference of the "Corrected in
+    # place" note.
+    _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "#1000", 1),
     # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
     # body and the revision it replaced. The test-name cite below counts 1 in the new
     # body and 0 in all four earlier corpus bodies and at every source commit before
@@ -342,15 +347,13 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
         "`tests/integration/test_index_schema_v4.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`",
         1,
     ),
-    # Re-measured 2026-10-08 for #832's re-seed: `#464` counts 2 in both the new
-    # body and the revision it replaced. The path-qualified test-name cite counts 1
-    # in the new body and 0 in both earlier corpus bodies and at every source
-    # commit before 011441b3; the bare test name counts 1 at all of them.
-    _PayloadMarker(
-        ItemId("architecture.trigram-index-beside-the-word-index"),
-        "`tests/integration/test_index_fallback.py::test_a_missing_table_raises_instead_of_answering_nothing`",
-        1,
-    ),
+    # Re-measured 2026-11-11 for #971's re-seed: the path-qualified
+    # `test_a_missing_table_raises_instead_of_answering_nothing` cite counts 1 in
+    # both the new body and the revision it replaced, so it stopped discriminating.
+    # `#1000` counts 1 in the new body and 0 in all three earlier corpus bodies and
+    # at every source commit before 59e9d4e7; it is the issue reference of the
+    # "Corrected in place" note.
+    _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#1000", 1),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#499", 4),
     # Re-measured 2026-10-08 for #832's re-seed: `#553` counts 1 in both the new
     # body and the revision it replaced. "#832" counts 1 in the new body and 0 at

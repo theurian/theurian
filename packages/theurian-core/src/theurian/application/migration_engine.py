@@ -5,7 +5,9 @@ that make the store trustworthy:
 
 - an applied migration is frozen (checksum mismatch is fatal, never repaired);
 - ``expectedRevision`` conflicts are reported, never merged;
-- re-application is a no-op, so the engine is safe to run repeatedly;
+- re-applying an applied migration applies none of its operations again, so the
+  engine is safe to run repeatedly; every apply still runs INV-6's guard over
+  the relations the project holds (ADR-0040 decision 5);
 - all operations in one migration share one transaction.
 
 This module depends on the domain and on a writer protocol. It never imports an
@@ -22,6 +24,7 @@ from typing import Final, Protocol
 
 from theurian.application.migration_alias_guards import refuse_alias_item_id_collision
 from theurian.application.migration_body_guards import refuse_duplicate_content_files
+from theurian.application.migration_relation_guards import refuse_relation_cycles
 from theurian.application.permissive_moves import LabelWriters, Overwrite, PermissiveMove
 from theurian.domain.enums import (
     KnowledgeStatus,
@@ -87,6 +90,8 @@ class MigrationWriter(Protocol):
     ) -> tuple[RevisionId, ...]: ...
     def add_relation(self, relation: KnowledgeRelation) -> None: ...
     def remove_relation(self, relation: KnowledgeRelation) -> None: ...
+    def list_project_relations(self, project_id: ProjectId) -> tuple[KnowledgeRelation, ...]: ...
+    def list_project_aliases(self, project_id: ProjectId) -> tuple[KnowledgeAlias, ...]: ...
     def add_alias(self, alias: KnowledgeAlias) -> None: ...
     def remove_alias(self, project_id: ProjectId, alias: ItemId) -> None: ...
     def add_evidence(self, evidence: KnowledgeEvidence) -> None: ...
@@ -450,6 +455,10 @@ class MigrationEngine:
                 the approved item the alias points at. The CLI refuses this
                 before ``create_database`` too, so a refused apply leaves no
                 state database behind.
+            RelationCycleError: If the relations the apply leaves -- pending or
+                not -- form a cycle INV-6 forbids (ADR-0040 decision 5). Checked
+                after the pending loop, so the caller's transaction rolls back
+                every write this apply made.
         """
         plan = self.plan(writer, project_id, migration_set)
         run_static_migration_guards(migration_set)
@@ -476,6 +485,8 @@ class MigrationEngine:
             )
             report.applied.append(migration.migration_id)
 
+        rows = writer.list_project_relations(project_id) + writer.list_project_aliases(project_id)
+        refuse_relation_cycles(rows)
         report.withdrawn_candidates = _gather_withdrawal_candidates(writer, project_id, affected)
         report.permissive_moves = list(labels.moves)
         report.overwrites = list(labels.overwrites)

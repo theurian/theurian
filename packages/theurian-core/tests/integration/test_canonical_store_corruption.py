@@ -405,16 +405,18 @@ UNPOPULATED_TABLES: Final = frozenset({"traceability_edges"})
 
 #: How many columns a single ``UPDATE`` can put a string into, across the whole
 #: populated schema. Arithmetic over the DDL, table by table, ``INTEGER PRIMARY
-#: KEY`` rowids and `traceability_edges` excluded: 4 + 8 + 24 + 13 + 4 + 6 + 11
+#: KEY`` rowids and `traceability_edges` excluded: 9 + 8 + 24 + 13 + 4 + 6 + 11
 #: + 13 + 11 + 5 + 2.
 #:
-#: The last term is `project_integrity`, added with schema version 3 (#30 PR2).
+#: The first term is `schema_metadata`, five of whose columns arrived with schema
+#: version 5 (ADR-0040 decision 4); the last is `project_integrity`, added with
+#: schema version 3 (#30 PR2).
 #:
 #: An exact number rather than a floor. ``len(columns) > 90`` -- what stood here
 #: -- let nine columns vanish from the sweep without a word, and a sweep that
 #: has quietly stopped covering a column asserts nothing about it while still
 #: reporting green.
-CORRUPTIBLE_COLUMN_COUNT: Final = 101
+CORRUPTIBLE_COLUMN_COUNT: Final = 106
 
 BODY: Final = "# Authentication policy\n\nEvery call carries a signed token.\n"
 DRAFT_BODY: Final = "# Caching draft\n\nA proposal nobody has reviewed.\n"
@@ -1477,11 +1479,12 @@ async def test_the_corpus_reaches_each_converter_family(
 
 # -- Where the guard sits, on the writer -----------------------------------
 #
-# `SqliteWriter` reads six times and is guarded four times, and until now
-# nothing anywhere held either half. Deleting any of the four guards left the
-# suite green while the corrupted cell walked out of `theurian migrate status`
-# -- so the placement was correct and unproven, which is the state a later edit
-# removes without noticing. The remaining two reads are unguarded on purpose:
+# `SqliteWriter` reads eight times and is guarded six times (`_writer_reads`,
+# held against the two lists below by the partition test). Before this sweep
+# held either half, deleting any of the then four guards left the suite green
+# while the corrupted cell walked out of `theurian migrate status` -- so the
+# placement was correct and unproven, which is the state a later edit removes
+# without noticing. The remaining two reads are unguarded on purpose:
 # `append_revision`'s `content_sha256`, whose absence
 # `test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state`
 # below holds, and `_refuse_pointer_to_another_items_revision`'s `item_id`
@@ -1494,15 +1497,17 @@ async def test_the_corpus_reaches_each_converter_family(
 # hash, which sends the next command to a different -- empty, undamaged --
 # database file (ADR-0016). There is no CLI invocation that reaches them over a
 # damaged state. `applied_migrations` is the exception and is swept through
-# `migrate status` as well.
+# `migrate status` as well; INV-6's guard runs on every apply (ADR-0040 decision
+# 5), so `migrate apply` with nothing pending reaches `list_project_relations` and
+# `list_project_aliases` too.
 
 PROJECT_ID: Final = ProjectId("demo")
 ITEM_ID: Final = ItemId("architecture.auth-policy")
 REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
-#: Four of the six reads :class:`SqliteWriter` performs, each over a cell whose
-#: converter quotes what it would not accept. Every one of these four sits behind
+#: Six of the eight reads :class:`SqliteWriter` performs, each over a cell whose
+#: converter quotes what it would not accept. Every one of these six sits behind
 #: a guard today. The other two -- `append_revision`'s `SELECT item_id,
 #: content_sha256` and `_refuse_pointer_to_another_items_revision`'s `SELECT
 #: item_id` -- deliberately do not, and are recorded with their reasons in
@@ -1537,6 +1542,19 @@ WRITER_READS: Final = (
         lambda writer: writer.record_migration(
             PROJECT_ID, MigrationId(MIGRATION_ID), "c" * 64, APPLIED_AT
         ),
+    ),
+    (
+        # INV-6's guard reads every relation row on every apply (ADR-0040 decision 5).
+        "list_project_relations",
+        "knowledge_relations",
+        "relation_type",
+        lambda writer: writer.list_project_relations(PROJECT_ID),
+    ),
+    (
+        "list_project_aliases",
+        "knowledge_aliases",
+        "item_id",
+        lambda writer: writer.list_project_aliases(PROJECT_ID),
     ),
 )
 
@@ -1726,7 +1744,7 @@ def test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it(
 def test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state(
     corpus: Corpus,
 ) -> None:
-    """The inverse, and the reason the writer is guarded four times and not five.
+    """The inverse, and the reason the writer is guarded six times and not seven.
 
     `append_revision` reads a stored `content_sha256` and is deliberately *not*
     guarded, because past ``BEGIN IMMEDIATE`` a failure is the caller's statement

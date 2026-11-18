@@ -610,7 +610,8 @@ and traversal depend on the type being closed.
    **Recorded: [ADR-0040](adr/0040-traceability-representation-and-edge-sources.md)**
    decision 5: the set is `supersedes`, `superseded_by` and `depends_on`, read
    as two graphs; [#1033](https://github.com/theurian/theurian/issues/1033)
-   owes the guard, over the whole set every apply leaves.
+   enforces the guard over the whole set every apply leaves
+   ([#1059](https://github.com/theurian/theurian/pull/1059)).
 4. **A thin approval-provenance pointer.** When `migrate apply` runs, record in
    `migration_history` the SHA of the merge commit the applied migration arrived
    through, where that is obtainable. Approval remains Git's; this is only a

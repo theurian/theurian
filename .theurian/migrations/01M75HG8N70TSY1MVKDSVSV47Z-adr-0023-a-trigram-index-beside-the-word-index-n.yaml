@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M75HG8N70TSY1MVKDSVSV47Z
+createdAt: '2026-11-11T14:51:59+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0023 twin from its current source: the corpus pins docs/adr/0023-trigram-index-beside-the-word-index.md
+  as it stood at f6b8a874, and 59e9d4e7 (#1013) moved the tracked document since.'
+operations:
+- op: createItem
+  itemId: architecture.trigram-index-beside-the-word-index
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.trigram-index-beside-the-word-index
+  revisionId: 01M75HG8N70TSY1MVKDSVSV480
+  expectedRevision: 01M4D4DZDVA7254HWGT82H42F4
+  contentFile: ../knowledge/architecture/trigram-index-beside-the-word-index.01M75HG8N70TSY1MVKDSVSV480.md
+  contentSha256: ca6fbc0508eef132079080f7cca0971ad845650e4b062cef62bca60fce4e0bc3
+  metadata:
+    title: 'ADR-0023: A trigram index beside the word index, not instead of it'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0023
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 59e9d4e79324a27fe51b8ad4655c0d1f621c6b44
+      filePath: docs/adr/0023-trigram-index-beside-the-word-index.md

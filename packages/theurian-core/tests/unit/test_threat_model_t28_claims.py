@@ -157,9 +157,9 @@ def _row_additions(method: ast.FunctionDef, name: str) -> Iterator[ast.AST]:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in _ADDERS
             and _is_row_container(node.func.value, name)
+            and not (name == _MOVES_LIST and method.name == _TRACK and _is_settled_extend(node))
         ):
-            if not (name == _MOVES_LIST and method.name == _TRACK and _is_settled_extend(node)):
-                yield node
+            yield node
 
 
 def _label_writers_methods() -> dict[str, ast.FunctionDef]:

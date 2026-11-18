@@ -48,6 +48,34 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Changed
 
+- **BREAKING — `SCHEMA_VERSION` 4 → 5, and `migrate apply` refuses a migration
+  set whose knowledge relations close a `supersedes` or `depends_on` cycle**
+  ([#1033](https://github.com/theurian/theurian/issues/1033); INV-6, ADR-0040
+  decisions 4 and 5). Two refusals; `apiVersion`, `protocolVersion` and
+  `MIGRATION_ENGINE_VERSION` do not move.
+  - **A state database written at schema version 4 is refused at open.**
+    `knowledge.search`, `knowledge.get` and `knowledge.status` refuse it with
+    "`<database>` was written at schema version 4, but this build uses 5. State
+    databases are derived; rebuild with `theurian migrate apply` rather than
+    migrating this file.", and one `theurian migrate apply` rebuilds it under a
+    new state hash. Nothing authored is lost.
+  - **`migrate apply` refuses a relation cycle with `RelationCycleError`**,
+    exit 4, naming the relation type and the cycle's item ids. Old shape:
+    applied. A stored `superseded_by` row counts as the inverse `supersedes`
+    row; a loop mixing the two graphs is not refused. The check reads every
+    relation row the apply leaves, on every apply, including one with nothing
+    pending, so a corpus a previous Core applied with a cycle is refused at its
+    first apply under this one, which publishes no state for it until the cycle is
+    broken. The cure is a new migration in `.theurian/migrations/` whose
+    `removeRelation` breaks it, as the remedy says; `propose accept` refuses
+    that migration as a proposal while the landed set holds the cycle.
+    `migrate validate` still reports such a set `valid`, with the refusal in
+    `permissiveMovesUnavailable`
+    ([#1056](https://github.com/theurian/theurian/issues/1056));
+    `theurian propose`, `propose accept` and `okf import` refuse where they
+    replay it (ADR-0040 decision 5).
+    Ids the alias map connects count as one item: a cycle an alias closes is refused, as is a
+    rename whose `supersededBy` names its successor; remove the `supersedes` row it wrote.
 - For remedy parsers: the race remedy prints `expectedRevision: <rev>`,
   on the content route `--expected-revision <rev>` and, when the landed
   writer of `<rev>` replays after the proposal,
@@ -145,6 +173,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   corrected in place.
 
 ### Fixed
+
+- **The recorded remote URL no longer carries credentials**
+  ([#1061](https://github.com/theurian/theurian/issues/1061)). `repository_url`
+  in `cli/context.py` now removes the authority userinfo from
+  `remote.origin.url`. With `https://alice:TOKEN@host/r.git` the token was
+  written to `project register --json` and `project list --json` stdout,
+  `$THEURIAN_DATA_DIR/projects.json`, and the state SQLite
+  `projects.repository_url` row. It reached no MCP output; the ingest anchor
+  held it in memory only. A credential git injects through
+  `url.<base>.insteadOf` is stripped too, since `git remote get-url` expands
+  it. Kept by design: a bare ssh username (`ssh://git@host/...`, `git+ssh://`,
+  `ssh+git://`; `ssh://user:pw@` is stripped), scp-like `user@host:path`, a
+  token in `?query`, and an `ext::` command line not beginning with
+  `scheme://`. Records written before the fix heal on the next
+  `theurian migrate apply` (the state `projects` row) and the next
+  `theurian project register` (`projects.json`). **Rotate any credential that
+  was ever in `remote.origin.url`:** rewriting the row does not scrub old bytes
+  from SQLite free pages (no `secure_delete`), and earlier state files and
+  terminal transcripts may still hold it.
+
+- **The CLI's git reads take the project root byte-exact and strip only git's
+  newline** ([#1039](https://github.com/theurian/theurian/issues/1039)). Each
+  git read in `cli/context.py` used the locale codec and `str.strip()`. A
+  project directory whose name ends in whitespace (anything `str.isspace()`
+  accepts, such as an IME's ideographic space U+3000) resolved to a sibling
+  repository named without it, whose `Review-Finding:` trailers were accepted.
+  Under a non-UTF-8 locale on macOS a non-ASCII path resolved to a mis-decoded
+  sibling with the same effect or a missing directory (`en_US.ISO8859-1`), or
+  raised `UnicodeDecodeError` (`ja_JP.SJIS`, for `プロジェクト`). A branch or
+  remote url the locale could not decode raised it too, crashing
+  `project register` and `migrate apply`, and the url `ingest`; a url ending in
+  whitespace was recorded stripped. The root is now `os.fsdecode` of git's
+  bytes; head, branch and url decode as UTF-8 with U+FFFD replacement.
 
 - **`theurian propose accept`'s floor and revision-conflict remedies no longer
   send a proposal `theurian propose` cannot draft back to `theurian propose`**

@@ -14,6 +14,7 @@ from theurian.domain.enums import (
     ContentClassification,
     KnowledgeKind,
     PolicyRequirement,
+    RelationType,
     ReviewCommentCategory,
     ReviewThreadState,
     Sensitivity,
@@ -755,11 +756,12 @@ def _edge(**overrides: object) -> TraceabilityEdge:
         "edge_id": EdgeId("01K1DEFEDG01234567890ABCDE"),
         "project_id": PROJECT,
         "source": TraceNode(TraceNodeType.SPECIFICATION, "spec.order-cancellation"),
-        "relation_type": "implemented_by",
+        "relation_type": RelationType.IMPLEMENTED_BY,
         "target": TraceNode(TraceNodeType.PULL_REQUEST, "431"),
         "evidence": (ANCHOR,),
         "confidence": 1.0,
         "created_at": NOW,
+        "source_commit": "a" * 40,
     }
     base.update(overrides)
     return TraceabilityEdge(**base)  # type: ignore[arg-type]
@@ -781,6 +783,36 @@ def test_self_referential_edge_is_rejected() -> None:
 def test_edge_confidence_is_bounded(confidence: float) -> None:
     with pytest.raises(InvariantViolationError, match=r"\[0.0, 1.0\]"):
         _edge(confidence=confidence)
+
+
+@pytest.mark.parametrize("commit", ["0123456789abcdef" * 2 + "01234567", "fedcba9876543210" * 4])
+def test_an_edge_is_measured_against_a_full_sha_1_or_sha_256_commit_id(commit: str) -> None:
+    assert _edge(source_commit=commit).source_commit == commit
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        "",
+        "a" * 39,
+        "a" * 41,
+        "a" * 63,
+        "a" * 65,
+        "A" * 40,
+        "g" * 40,
+        "a" * 40 + "\n",
+        " " + "a" * 40,
+    ],
+)
+def test_an_edge_refuses_any_other_source_commit_without_echoing_it(commit: str) -> None:
+    """One exact message for all nine values, so it varies with none of them."""
+    with pytest.raises(InvariantViolationError) as refused:
+        _edge(source_commit=commit)
+
+    assert (
+        str(refused.value)
+        == "TraceabilityEdge.source_commit must be a full lowercase hex commit id"
+    )
 
 
 def test_policy_lists_only_required_artifacts() -> None:

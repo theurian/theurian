@@ -339,7 +339,7 @@ def test_supersedes_is_marked_acyclic() -> None:
         target_item_id=ItemId("architecture.auth-policy-v1"),
         created_at=NOW,
     )
-    assert relation.must_be_acyclic
+    assert relation.must_be_acyclic()
 
 
 # -- Aliases and evidence --------------------------------------------------

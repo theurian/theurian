@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M7P4PJPQCZVD5Q8T0W3ZD9C3",
+  "migrationId": "01M7P4PJPQCZVD5Q8T0W3ZD9C4",
+  "itemId": "architecture.state-hash-covers-the-working-tree",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "971-reseed-adr-0016",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0016 at 145049a6. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at 502cd141, and 145049a6 (#1036) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#971).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "145049a6f0f2cdd7c011ca150b9deb5c145d84b6",
+      "filePath": "docs/adr/0016-state-hash-covers-the-working-tree.md"
+    }
+  ]
+}

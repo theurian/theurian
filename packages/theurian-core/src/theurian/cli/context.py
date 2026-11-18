@@ -8,6 +8,7 @@ rather than being scattered across command bodies.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -75,7 +76,6 @@ def find_git_root(start: Path) -> Path | None:
             cwd=start,
             env=env,
             capture_output=True,
-            text=True,
             timeout=GIT_TIMEOUT_SECONDS,
             check=False,
         )
@@ -83,7 +83,14 @@ def find_git_root(start: Path) -> Path | None:
         return None
     if result.returncode != 0:
         return None
-    return Path(result.stdout.strip())
+    # Only git's newline is dropped: a directory name may end in whitespace (#1039).
+    return Path(os.fsdecode(result.stdout.removesuffix(b"\n")))
+
+
+def _line(stdout: bytes) -> str:
+    # "replace": strict would raise on a non-UTF-8 ref, and surrogateescape would
+    # move that raise to the SQLite bind of the recorded value.
+    return stdout.removesuffix(b"\n").decode("utf-8", "replace")
 
 
 def current_commit(root: Path) -> str | None:
@@ -93,13 +100,12 @@ def current_commit(root: Path) -> str | None:
             cwd=root,
             env=child_environment(os.environ),
             capture_output=True,
-            text=True,
             timeout=GIT_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
+    return _line(result.stdout) if result.returncode == 0 else None
 
 
 def default_branch(root: Path) -> str:
@@ -109,14 +115,32 @@ def default_branch(root: Path) -> str:
             cwd=root,
             env=child_environment(os.environ),
             capture_output=True,
-            text=True,
             timeout=GIT_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "main"
-    branch = result.stdout.strip()
-    return branch or "main"
+    return _line(result.stdout) or "main"
+
+
+# Not urllib.parse.urlsplit: it removes \t\r\n anywhere in the URL, which undoes
+# the `\n` row of test_a_remote_url_with_trailing_whitespace_is_reported_as_stored;
+# it strips leading whitespace; and it raises ValueError on `[::1`. A bare ssh
+# username is a login name, not a credential, so it stays; scp-like
+# `user@host:path` has no scheme and never matches.
+_AUTHORITY_USERINFO = re.compile(
+    r"^(?P<prefix>(?:[A-Za-z0-9+.-]+::)?(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://)(?P<userinfo>[^/?#]*)@"
+)
+_SSH_SCHEMES = frozenset({"ssh", "git+ssh", "ssh+git"})
+
+
+def _without_userinfo(url: str) -> str:
+    match = _AUTHORITY_USERINFO.match(url)
+    if match is None:
+        return url
+    if match["scheme"].lower() in _SSH_SCHEMES and ":" not in match["userinfo"]:
+        return url
+    return match["prefix"] + url[match.end() :]
 
 
 def repository_url(root: Path) -> str | None:
@@ -126,14 +150,12 @@ def repository_url(root: Path) -> str | None:
             cwd=root,
             env=child_environment(os.environ),
             capture_output=True,
-            text=True,
             timeout=GIT_TIMEOUT_SECONDS,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    url = result.stdout.strip()
-    return url or None
+    return _without_userinfo(_line(result.stdout)) or None
 
 
 def _schema_candidate_exists(candidate: Path) -> bool:

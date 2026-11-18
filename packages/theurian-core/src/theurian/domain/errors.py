@@ -9,7 +9,10 @@ from __future__ import annotations
 import errno as _errno
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from theurian.domain.enums import INVERSE_RELATIONS
+
 if TYPE_CHECKING:
+    from theurian.domain.enums import RelationType
     from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 
 
@@ -117,6 +120,48 @@ class MigrationCycleError(MigrationError):
         self.cycle = cycle
         rendered = " -> ".join(str(m) for m in cycle)
         super().__init__(f"Migration dependency cycle: {rendered}")
+
+
+class RelationCycleError(MigrationError):
+    """The relations an apply leaves form a cycle INV-6 forbids (ADR-0040 decision 5).
+
+    Not :class:`MigrationCycleError`: that is a ``dependsOn`` cycle among migrations,
+    cured by editing them. Applied migrations are frozen, so a relation cycle is cured
+    by a new migration whose ``removeRelation`` breaks it, and the remedy says so.
+
+    ``cycle`` lists one entry per step, in ``relation_type``'s direction, the last step
+    leading back to the first entry's item. Each entry is an id as stored, not resolved
+    through an alias: the source, in that direction, of one stored row per step -- for a
+    stored ``superseded_by`` row, the row's target. When the cycle closes on the ids as
+    stored, two or more entries can be ids of one item.
+
+    ``through`` is empty when the cycle closes on the ids as stored. Otherwise it is that
+    row of each step, exactly as stored, then every alias row that joins ids of one of the
+    cycle's items.
+    """
+
+    def __init__(
+        self, relation_type: RelationType, cycle: tuple[ItemId, ...], through: tuple[str, ...] = ()
+    ) -> None:
+        self.relation_type = relation_type
+        self.cycle = cycle
+        path = ", ".join(through) or f" {relation_type} ".join(map(str, (*cycle, cycle[0])))
+        super().__init__(f"The knowledge relations form a {relation_type} cycle (INV-6): {path}")
+        inverse = INVERSE_RELATIONS.get(relation_type)
+        either_way = (
+            ""
+            if inverse is None
+            else f" (or for the `{inverse}` relation from the next item back to it, "
+            "whichever the migrations recorded)"
+        )
+        relation = f"`{relation_type}` relation from an item of this cycle to the next{either_way}"
+        self.remedy = (
+            "Write a new migration with a `removeRelation` for one "
+            f"{'relation this cycle lists, exactly as listed' if through else relation}, then run "
+            "`theurian migrate apply` again. If the cycle holds more than one relation between "
+            "the same two items, removing one leaves the cycle: "
+            "repeat until the apply succeeds."
+        )
 
 
 class MigrationDependencyMissingError(MigrationError):

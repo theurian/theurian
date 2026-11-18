@@ -50,7 +50,9 @@ The pin is six modules and a support module, split by section:
   first four are driven in ``test_adr_0039_populations.py``. A method defined on
   a class is held apart, by asserting each class holds its members and nothing
   else. A table row *accounts for* a site when the site's token appears
-  anywhere in the row's first two cells.
+  anywhere in the row's first two cells or, failing that, in an ``## Amendment``
+  section naming the row's label. The pasted population is the last console
+  block in the ADR opening with the first command, *Context*'s or an amendment's.
 - *What ``compat check`` reads* is every name ``compat_check`` and
   ``domain/compatibility.py`` spell or import; a read through another module's
   function is outside it.
@@ -121,6 +123,7 @@ from typing import Final
 import pytest
 from adr_0037_support import collapsed
 from adr_0039_support import (
+    ADR,
     MIGRATION_SCHEMA,
     REPO_ROOT,
     _adr,
@@ -605,6 +608,19 @@ ADR_STATES: Final[dict[str, str]] = {
         validates against their membership (decision 9); a schema served from outside
         `schemas/` is beyond it (#856). The scan reports every new occurrence within its reach
         (*Context*'s "What the scan cannot report") for a person to classify.""",
+    # Amendment 2's blockquote: its `>` markers are part of the collapsed text, so a re-wrap
+    # of the next two is RED, unlike the rest of this table.
+    # Fact half: test_adr_0040_claims.py's `_append_only_breach` and its refusals test.
+    "a2-append-only": """ADR-0040's claims pin holds *Context*
+        > append-only against `5ad30799`, by the key its module docstring states under
+        > *Append-only* (`packages/theurian-core/tests/unit/test_adr_0040_claims.py`).""",
+    # Fact half: the two tests it names, in test_adr_0039_refusals.py.
+    "a2-decoder-tests": """naming only the exception type.
+        > `test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database[edge]`
+        > decodes a row with an unknown `relation_type` inside `_reading()` and gets that
+        > error, the value absent from its message;
+        > `test_every_store_read_decodes_its_row_inside_the_reading_guard` is the
+        > second, by the key in its own body.""",
 }
 
 
@@ -630,12 +646,15 @@ ADR_NO_LONGER_STATES: Final = (
     "before its caller's gate runs",
     "the older Core's refusal is undiagnosable",
     "every new occurrence for a person to classify",
+    "neither a line of command output nor a table row",
+    "holds every bare-name reference to a decoder",
 )
 
 
 @pytest.mark.parametrize("sentence", ADR_NO_LONGER_STATES)
 def test_the_adr_no_longer_states(sentence: str) -> None:
-    assert collapsed(sentence).casefold() not in _adr().casefold()
+    unquoted = collapsed(re.sub(r"(?m)^[> ]+", "", ADR.read_text(encoding="utf-8")))
+    assert collapsed(sentence).casefold() not in unquoted.casefold()
 
 
 def _bullets(lines: list[str]) -> list[str]:
