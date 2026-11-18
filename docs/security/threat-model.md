@@ -2078,7 +2078,7 @@ input and both remaining controls have something to check.
 
 **On the `$ref` path, what still stands in for the two owed controls is the
 absence of the request** — and that is now a claim about *that* path rather than
-about the package, because one site does reach out (the fifth bullet below).
+about the package, because one site does reach out (the sixth spawn site below).
 *Never fetched* is pinned separately from the recording, because reading the
 recorded output cannot see a fetch performed beside it: a mutation that recorded
 every ref exactly as before and added a real `urlopen` beside it survived the
@@ -2097,10 +2097,13 @@ other's blind spots.
   and `git fetch` reach the network without Theurian importing a client. It
   watches `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
   `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
-  **six** sites. Four take no argument vector from a document: the `git`
+  **seven** sites. Five take no argument vector from a document: the `git`
   context reads in `cli/context.py`; the service runner in
-  `infrastructure/services/runner.py`; since ADR-0029's trailer source landed,
-  `infrastructure/git/trailer_source.py`, which runs `git log` over the pinned
+  `infrastructure/services/runner.py`; since ADR-0040 decision 2's walk landed,
+  `infrastructure/git/first_parent_walk.py`, which runs `rev-parse`, `rev-list`,
+  `diff-tree` and `log` to read first-parent history at `HEAD`; since ADR-0029's
+  trailer source landed, `infrastructure/git/trailer_source.py`, which runs
+  `git log` over the pinned
   `refs/remotes/origin/main` to read `Review-Finding:` trailers; and, since
   ADR-0034's T-15 check landed, `infrastructure/git/committed_check.py`, which
   runs `git cat-file blob HEAD:<path>` to answer whether the migration file
@@ -2115,16 +2118,21 @@ other's blind spots.
   a document or a config carries reaches either. The committed check resolves
   `git` to an absolute path — ADR-0030 clause 5's tier, not the bare-`git` tier
   its `cli/context.py` sibling uses, because this call gates a write — and both
-  bound the wait with `GIT_TIMEOUT_SECONDS`.
+  bound the wait with `GIT_TIMEOUT_SECONDS`. The walk is not a network client
+  either: each vector is constants plus, at most, the object id `rev-parse`
+  printed for `HEAD` and a commit count, and names no remote; the shared child
+  environment keeps a partial clone's lazy fetch from reaching one; and it
+  resolves `git` to an absolute path, as the committed check does, killing any
+  spawn that outlives the trailer source's 30-second `GIT_TIMEOUT_SECONDS`.
 
-  **The fifth reaches GitHub on purpose**, and its arrival is what retired this
+  **The sixth reaches GitHub on purpose**, and its arrival is what retired this
   entry's absence argument: `infrastructure/github/gh_cli.py` spawns the
   operator's `gh` as `gh api graphql --hostname github.com` (ADR-0030). Its
   destination *does* come from configuration, which is exactly the moment SEC-10's
   repository allowlist stopped being owed and started running — see *Controls*
   above.
 
-  **The sixth is the only one handed an argument a document supplies.** Since
+  **The seventh is the only one handed an argument a document supplies.** Since
   ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
   runs one command,
   `git -c core.precomposeunicode=false --literal-pathspecs --shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false log --no-walk --no-renames --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
@@ -2212,9 +2220,10 @@ other's blind spots.
 
   This entry said "two sites" and named the first two until 2026-09-02,
   "three" until ADR-0030's adapter landed, "four" until ADR-0034's committed
-  check landed, and "five" until ADR-0033's fix-commit check landed; the pinned
-  set (`PROCESS_SPAWN_SITES` in `tests/unit/test_network_call_sites.py`) is what
-  the count is held against, by `test_threat_model_t7_claims.py`.
+  check landed, "five" until ADR-0033's fix-commit check landed, and "six" until
+  ADR-0040's first-parent walk landed; the pinned set (`PROCESS_SPAWN_SITES` in
+  `tests/unit/test_network_call_sites.py`) is what the count is held against, by
+  `test_threat_model_t7_claims.py`.
 - **The socket layer, behaviourally.**
   `test_parsing_a_hostile_document_opens_no_socket` watches
   `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while
@@ -2239,7 +2248,7 @@ the flag read `false`, because no tool exposed either; slice 3 registered
 `review.search` and moved it. What the `true` says is *an ingestion call surface
 exists that a client may call*, and nothing wider: **no MCP tool spawns `gh`**, a
 fetch stays an operator's act through `theurian review ingest`, and the flip adds
-no site to the five this entry counts above.
+no site to those this entry counts above.
 
 The window before it is a **bounded residual, recorded rather than argued
 away**: for slices 1 and 2 the machine-readable answer read `false` while a
