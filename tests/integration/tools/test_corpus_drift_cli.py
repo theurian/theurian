@@ -8,16 +8,18 @@ depends on, and this file is where they are exercised for real:
   That is the difference between an untracked migration being excluded because a
   test said so and being excluded because git did.
 - **the flags decide the exit status.** ``.github/workflows/shared.yml`` runs
-  this with ``--advisory --format github --summary`` and carries neither
+  this with ``--advisory --format github --summary`` on a pull request (and
+  without ``--advisory`` on a push to ``main``), and carries neither
   ``continue-on-error: true`` nor ``|| true``, deliberately: either would
   swallow exit 2 alongside exit 1 and leave a green tick over a check that had
-  gone silent. Nothing else in the repository stops that, so the CLI's own
-  handling of exit 2 is the last guard. The compared-count floor reaches the
-  exit status through the same path and is mostly driven here with
-  ``--minimum-compared``, because the tool's own default binds only on this
-  repository's tree and none of these fixtures is that tree. One test drives the
-  *default* instead, by repointing ``corpus_drift.REPO_ROOT`` at a fixture so
-  that ``main`` with no flags at all takes the branch the CI job takes:
+  gone silent. ``tests/ci/test_corpus_drift_gate.py`` pins their absence, and
+  the CLI's own handling of exit 2 is what that absence protects. The
+  compared-count floor reaches the exit status through the same path and is
+  mostly driven here with ``--minimum-compared``, because the tool's own
+  default binds only on this repository's tree and none of these fixtures is
+  that tree. One test drives the *default* instead, by repointing
+  ``corpus_drift.REPO_ROOT`` at a fixture so that ``main`` with no flags at all
+  takes the branch the CI job takes:
   ``test_the_default_floor_binds_the_one_tree_its_number_was_measured_against``.
   Without it, ``minimum_compared_for(...)`` can be cut out of ``main`` and this
   whole suite stays green.
@@ -165,7 +167,7 @@ def test_a_bare_run_over_a_drifted_corpus_exits_one(tmp_path: Path) -> None:
 def test_advisory_reports_the_same_drift_and_still_exits_zero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The advisory job must stay visible: exit 0, and the finding printed anyway.
+    """The advisory run (pull requests) must stay visible: exit 0, and the finding printed anyway.
 
     A downgrade that also silenced the report would turn the CI job into a
     no-op, which is the failure mode `--advisory` is one character away from.
@@ -181,7 +183,7 @@ def test_advisory_reports_the_same_drift_and_still_exits_zero(
 
 
 def test_advisory_does_not_rescue_a_tree_the_checker_could_not_read(tmp_path: Path) -> None:
-    """The load-bearing case, through the flag path the CI job actually passes.
+    """The load-bearing case, through the flag path the CI job passes on a pull request.
 
     `--advisory` downgrades drift and nothing else. A directory git cannot
     answer for -- no repository, a container without git, a broken checkout --
@@ -298,7 +300,8 @@ def test_the_floor_outranks_drift_so_advisory_cannot_downgrade_a_breach(tmp_path
     had lost twenty-five of twenty-six anchors would report its one surviving
     drift as an advisory warning and pass.
 
-    The CI step in `.github/workflows/shared.yml` passes `--advisory` and carries
+    The CI step in `.github/workflows/shared.yml` passes `--advisory` on a pull
+    request only, and carries
     neither `continue-on-error` nor `|| true`, so this exit status is what
     reaches the build.
     """

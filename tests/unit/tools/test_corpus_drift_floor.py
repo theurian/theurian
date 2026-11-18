@@ -275,7 +275,7 @@ def test_a_run_that_cleared_its_floor_keeps_the_drift_verdict_it_earned() -> Non
     """The floor must not overwrite an ordinary finding, only an untrustworthy run.
 
     Without this, `always NOTHING_COMPARED` satisfies the tests above and turns
-    the advisory job into a build failure on every edited ADR -- the precise
+    the advisory pull-request run into a build failure on every edited ADR -- the precise
     outcome `--advisory` exists to prevent.
     """
     report = Report((_DRIFTED,), Status.DRIFTED, "1 drifted -- compared 1 anchor(s).")
@@ -305,7 +305,7 @@ def test_a_run_held_to_the_floor_still_reports_every_comparison_it_made() -> Non
 def test_a_breach_is_annotated_as_an_error_beside_the_drift_it_found() -> None:
     """CI reads annotations, and the floor's own reason has to be one of them.
 
-    The drift stays a `::warning` -- the job is advisory about drift -- and the
+    The drift stays a `::warning` -- the pull-request run is advisory about drift -- and the
     breach adds the `::error` that no flag downgrades. Emitting only one of the
     two loses either the finding or the reason the run cannot be trusted.
     """

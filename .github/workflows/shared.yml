@@ -104,10 +104,11 @@ jobs:
               #
               # `pages.yml` watches `docs/**` too (its own `paths:`, checked
               # 2026-08-22), but only to rebuild the published site on a push to
-              # `main`, and it never runs this checker. This filter is the only
-              # path that starts `corpus-drift`, so without this entry the drift
-              # this job exists for -- an ADR edit and nothing else -- would
-              # start no run at all.
+              # `main`, and it never runs this checker. On a pull request this
+              # filter is the only path that starts `corpus-drift`, so without
+              # this entry the drift this job exists for -- an ADR edit and
+              # nothing else -- would start no run at all. A push to `main`
+              # starts the job whatever this filter says (see the job's `if:`).
               - 'docs/**'
               - '.theurian/**'
               - 'tools/corpus_drift.py'
@@ -353,7 +354,7 @@ jobs:
   # the ADR itself is edited. This is the live half (#263): the document each
   # anchor names, hashed now, against the digest the corpus recorded.
   #
-  # ADVISORY -- the operational call, and why.
+  # ADVISORY ON A PULL REQUEST -- the operational call, and why.
   #
   # Editing an ADR is a normal, correct thing to do, and it is the *only* thing
   # that produces this finding. A red build on it would land on the pull request
@@ -381,14 +382,32 @@ jobs:
   # binds here because this job runs against the tree the number was measured
   # on.
   #
+  # BLOCKING ON A PUSH TO main (#971, ruled 2026-11-11). The reasons above are
+  # all about a pull request: the author is not the one who owes the re-seed.
+  # Once the change is on `main`, drift is the maintainer's own debt and it
+  # fails the run, so `main` goes red until the re-seed lands. Only
+  # `pull_request` adds `--advisory`; any other event, including one added
+  # later, blocks.
+  #
+  # The job also runs on every event other than `pull_request`, whatever the
+  # paths filter says. Measured on
+  # `main`'s run history: `dorny/paths-filter` diffs a push against the previous
+  # commit, so the push run of `abe80186` (44214590589, uv.lock and pyproject
+  # only) shows this job skipped, and `main` runs are cancelled by
+  # `cancel-in-progress` -- 40652918157, 40652927014, 40652934872 and
+  # 40652944144 (`e5cbfd83`, `a2dc94b1`, `c65d6a01`, `54a9f673`), all within 15
+  # seconds on 2026-10-28. A drifting merge whose run is cancelled by a merge
+  # touching no corpus path would therefore never turn `main` red. The checker
+  # compares the whole tree, so the later push catches the earlier drift.
+  #
   # Nothing that was previously enforced becomes advisory here. Every hard rule
   # over the corpus stays hard, in `core.yml`'s test job, where it already was.
   corpus-drift:
-    name: Corpus drift (advisory)
+    name: Corpus drift
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: changes
-    if: needs.changes.outputs.corpus == 'true'
+    if: github.event_name != 'pull_request' || needs.changes.outputs.corpus == 'true'
     steps:
       # The default depth-1 clone is enough: the checker reads the index and the
       # working tree, never history. It does not need the `fetch-depth: 0` that
@@ -404,4 +423,7 @@ jobs:
       # actually writes.
       - run: uv sync --frozen
       - name: The committed corpus still matches its `docs/` sources
-        run: uv run python tools/corpus_drift.py --advisory --format github --summary
+        env:
+          # Unquoted below on purpose: empty must vanish, not become an argument.
+          DRIFT_FLAGS: ${{ github.event_name == 'pull_request' && '--advisory' || '' }}
+        run: uv run python tools/corpus_drift.py $DRIFT_FLAGS --format github --summary

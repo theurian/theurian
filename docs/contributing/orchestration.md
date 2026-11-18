@@ -327,6 +327,14 @@ does not fire on — is [#724](https://github.com/theurian/theurian/issues/724).
 - Run `gh pr list --state open --draft=false` at every transition — closing an
   assignment, opening the next — and merge anything green before dispatching new
   work.
+- At the same transition, read
+  `gh run list -R theurian/theurian --branch main --event push --workflow shared.yml --limit 1`.
+  Neither `gh pr list` nor a PR's checks sees a push-to-main run. If it
+  concluded failure and the failing job is `Corpus drift`, name the drifted
+  items from the job output in the report: the re-seed through `theurian propose`
+  is the maintainer's own debt, owned by whoever merged the ADR edit (rationale:
+  the `corpus-drift` block in `.github/workflows/shared.yml`,
+  [#971](https://github.com/theurian/theurian/issues/971)).
 - Read the settled checks output, **then** merge as a separate action. A poll
   loop exits on no-pending, not on no-fail; a chained merge ran over a failing
   non-required check on

@@ -3,9 +3,9 @@
 The asymmetry in :func:`corpus_drift.exit_code` is the whole operational
 argument for shipping this check as advisory (#263, commit 1d10b97): drift is a
 maintenance signal on a normal action -- somebody improved an ADR -- so failing
-the build on it trains people to bypass the job, while a run that compared
-nothing is not a signal about the corpus at all. It is the tool reporting that
-it has stopped working.
+the pull request that carries the ADR edit trains people to bypass the job,
+while a run that compared nothing is not a signal about the corpus at all. It
+is the tool reporting that it has stopped working.
 
 A single character makes those two collapse into each other. ``return 0 if
 advisory else 2`` in the ``NOTHING_COMPARED`` branch turns "the committed corpus
@@ -83,14 +83,14 @@ def test_advisory_leaves_a_clean_run_alone() -> None:
 def test_drift_fails_a_run_that_did_not_ask_for_advisory() -> None:
     """Run bare -- a local `uv run python tools/corpus_drift.py` -- drift is exit 1.
 
-    The CI job passes `--advisory`; a maintainer checking before a re-seed does
-    not, and wants a non-zero status they can chain on.
+    The CI job passes `--advisory` on a pull request only. A push to `main`, and
+    a maintainer checking before a re-seed, do not, and want a non-zero status they can chain on.
     """
     assert corpus_drift.exit_code(DRIFTED, advisory=False) == 1
 
 
 def test_advisory_downgrades_drift_to_a_pass() -> None:
-    """The reason the job is advisory: an ADR edit must not redden its own pull request.
+    """Why a pull request run is advisory: an ADR edit must not redden its own pull request.
 
     The finding is not actionable in the same change -- re-seeding runs
     `theurian propose`, which is its own commit -- so the annotation is the
