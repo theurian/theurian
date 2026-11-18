@@ -122,6 +122,21 @@ The entry points an unknown value can reach refuse it as follows:
 | OKF import, a relation entry's `type` (`:586-590`, `_draft_relations` `:829-853`) | Carried verbatim into an `addRelation` in the one relations draft. An unknown type fails that draft's validation, and the whole draft is refused as one `ImportRefusal(kind="relations", key="addRelation")` carrying the validator's message, so every relation in the bundle is dropped, not only the unknown one | As the loader | Read from source, not run |
 | Derived store row decoders: `_item_from_row` (`infrastructure/sqlite/store.py:1681`), `_revision_from_row` (`:1707`) and `_relation_from_row` (`:1784`). `knowledge.get`'s first store read is `get_item_metadata` → `_item_from_row` (`mcp/tools.py:2343`), before its `may_surface`/`may_disclose` gate (`:2351-2352`); `list_relations` decodes every edge inside `_read_all` (`store.py:968-973`) before `_relation_is_visible` filters them (`mcp/tools.py:2415`); `_revision_from_row` runs after the gate, through `current_revision` → `get_revision` (`mcp/tools.py:2397`; `store.py:582`, `:538`) | The decoder raises `ValueError` (`'requirement' is not a valid KnowledgeKind`, `'traces_to' is not a valid RelationType`), and every store read runs its decoder inside `_reading()` (`_read_one`, `:418-420`), which re-raises it as `StateDatabaseUnreadableError`: `This project's state database cannot be read (ValueError): it is damaged, or holds a value this build cannot interpret.`, followed by a remedy to delete `.theurian/state/` and run `theurian migrate apply` | No: the message names only the exception type; the value is on `__cause__` | Measured: each decoder called on a mapping inside `_reading()`, as `_read_one` calls it; the valid values decode |
 
+  *Amended in Amendment 3 (#1084):* the `theurian propose --kind` row's message
+  and method are retracted. The row is re-measured at
+  `d97c48c3`, a commit on the branch of #1084, so it cites that commit's lines:
+  the `kind` option is `cli/propose_commands.py:151-153`, and its refusal reads
+  `Value error, 'requirement' is not one of 'architecture', 'decision', 'domain', 'operations', 'security', 'testing', 'api', 'incident', 'convention', 'rejected-approach', 'known-exception'.`
+  The re-measurement invokes `propose_app` through `typer.testing.CliRunner`
+  with `standalone_mode=False` and `_draft`, the command body's drafting call,
+  replaced by a recorder. Unlike the preamble's *measured*, it drives
+  `propose_app`'s argument parser rather than calling one function. The
+  refusal is a `typer.BadParameter` whose `param.opts` is `["--kind"]`, and the
+  recorder stays empty, while the same invocation with `--kind domain` reaches
+  it once.
+  `test_propose_kind_is_refused_at_option_parsing_naming_the_value_and_the_valid_set`
+  asserts that exception, its `param.opts`, that message and both recorder
+  counts.
 ### The derived store
 
 The state hash's inputs are the migration ids and checksums, the body checksums,
@@ -908,3 +923,42 @@ packages/theurian-core/src/theurian/cli/propose_commands.py:152:        Knowledg
 > second, by the key in its own body. Nothing under
 > `packages/theurian-core/src` calls `list_traceability_edges` yet, and the
 > decoder's two `TraceNodeType` constructions are outside the key (Amendment 1).
+
+## Amendment 3 — typer 0.29 changed the `propose --kind` refusal's message and method (2026-11-18, #1084)
+
+> **This is an append-only amendment.** #1084 bumps typer from 0.27.3 to 0.29.1.
+> Typer 0.29.0 validates parameters with Pydantic. Its
+> [release notes](https://github.com/fastapi/typer/blob/0.29.1/docs/release-notes.md),
+> under 0.29.0 as clarified in 0.29.1, say that "Some validation error messages,
+> help text, and usage output have changed" and that "Callback parameter objects
+> no longer expose Click's `.type`, `.make_metavar()`, `.human_readable_name`, or
+> `.type_cast_value()`". Both sentences are absent from the file at tag 0.29.0,
+> whose entry says only that "Some validation error messages have changed". Two
+> cells of *Context*'s `theurian propose --kind` row are retracted. The row's
+> line is not edited, since ADR-0040's claims pin holds every line this record
+> had at `5ad30799` in place (Amendment 2); the note under that table replaces
+> them.
+>
+> - The message `'requirement' is not one of 'architecture', ..., 'known-exception'.`
+>   is now the same text behind a `Value error, ` prefix, quoted in full in the
+>   note.
+> - The method "the option's own type converted the value on the built command;
+>   the command was not invoked" reads the option's `.type`. On 0.29.1 the built
+>   command's `kind` option, a `typer.core.TyperOption`, has no such attribute,
+>   and reading it raises `AttributeError`. The note's `CliRunner` invocation of
+>   `propose_app` replaces it.
+>
+> Both were re-measured at `d97c48c3`, a commit on the branch of #1084. The
+> rest of the row holds: the message names the value and the valid set, and
+> the value is still refused at option parsing. On the note's `CliRunner`
+> invocation, the refusal's traceback passes through Click's
+> `handle_parse_result` into `_TyperParameter.process_value` at
+> `typer/core.py:109` in typer 0.29.1, which the test does not assert.
+>
+> The note's `cli/propose_commands.py:151-153` is a separate, pre-existing
+> line drift, not a typer change. The row's `:148-150`, in its first cell, are
+> the `kind` parameter's lines at this record's anchor, `f0e4d754`, and they
+> were already `:151-153` at `abe80186`, #1084's base on `main`. That cell is
+> not retracted: the note gives the new lines only because it re-anchors the
+> row's measurement at the commit it names, and so cites that commit's lines.
+> *Context*'s other cites stay dated to `f0e4d754`.
