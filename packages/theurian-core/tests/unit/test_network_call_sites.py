@@ -254,10 +254,10 @@ NETWORK_CLIENT_SITES = {
 #: Every place in the shipped package that may start another program, in the same
 #: ``(module path under theurian/, the listed name it reaches)`` shape.
 #:
-#: Seven modules. Six take no command from a document, and the seventh is the
-#: one this pin existed to make visible -- it reaches GitHub on purpose, and what
-#: bounds it is ADR-0030's clauses rather than the absence this file used to
-#: hold:
+#: Seven modules. Five take no argument vector from a document. ``gh_cli.py``
+#: reaches GitHub on purpose, and what bounds it is ADR-0030's clauses rather
+#: than the absence this file used to hold. ``fix_commit_check.py`` is the only
+#: one handed an argument a document supplies:
 #:
 #: - ``cli/context.py`` runs ``git rev-parse`` and friends to locate the working
 #:   tree and read the current commit. Fixed argument vectors, no shell, and a
