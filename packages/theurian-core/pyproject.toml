@@ -56,8 +56,8 @@ daemon = [
 # VectorStore port; see docs/adr/0014.
 vector = ["sqlite-vec==0.1.9"]
 telemetry = [
-    "opentelemetry-sdk==1.44.0",
-    "opentelemetry-exporter-otlp-proto-http==1.44.0",
+    "opentelemetry-sdk==1.45.2",
+    "opentelemetry-exporter-otlp-proto-http==1.45.2",
 ]
 all = ["theurian[daemon,vector,telemetry]"]
 

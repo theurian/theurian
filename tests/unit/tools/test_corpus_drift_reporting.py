@@ -157,7 +157,7 @@ def test_a_clean_text_report_does_not_offer_a_remedy_for_nothing() -> None:
 def test_the_summary_carries_the_remedy_and_names_the_drifted_document() -> None:
     """`$GITHUB_STEP_SUMMARY` is where a maintainer looks before the log.
 
-    The table is the delivery mechanism for an advisory job: the exit status is
+    The table is the delivery mechanism for an advisory run (a pull request): the exit status is
     0, so this is the only place the finding is visible without opening the run.
     """
     summary = render_summary(_DRIFT)
@@ -197,7 +197,7 @@ def test_an_uncheckable_anchor_is_annotated_rather_than_silently_dropped() -> No
 def test_a_run_that_compared_nothing_is_annotated_as_an_error() -> None:
     """The one outcome that must never read as green, in the one place CI shows it.
 
-    Drift is deliberately only a `::warning` because the job is advisory. That
+    Drift is deliberately only a `::warning` because the pull-request run is advisory. That
     choice is exactly why the empty run needs its own `::error`: without it, a
     corpus that vanished produces a quieter log than an edited ADR.
 

@@ -241,7 +241,7 @@ records that an issue for the control itself is still owed).
 CLI and the migration engine and nothing that can serve
 ([ADR-0014](docs/adr/0014-dependency-pinning-and-pre-1-0-isolation.md) explains
 why the split is deliberate). `[all]` also works and is what a contributor
-checkout installs; measured, it adds 12 distributions — `sqlite_vec`, the
+checkout installs; measured, it adds 14 distributions — `sqlite_vec`, the
 OpenTelemetry stack and their dependencies — that no module under `src/` imports,
 so it buys nothing here yet. `--python 3.13` makes the interpreter explicit: Core
 requires 3.13, and `uv tool install 'theurian[all]'` was observed failing on a
