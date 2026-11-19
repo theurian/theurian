@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import itertools
+import string
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -168,7 +170,7 @@ _HOSTILE: Final = [
     pytest.param(b"Refs: #1033\n", "#1033", id="issue-number"),
     pytest.param(f"Refs: {_MARKER}, c.d\n".encode(), _MARKER, id="comma-list"),
     pytest.param(f"Refs: {_MARKER}{_NBSP}\n".encode(), _MARKER, id="nbsp-not-stripped"),
-    pytest.param(f"Refs: {_MARKER}x{'a' * 190}\n".encode(), _MARKER + "x", id="201-chars"),
+    pytest.param(f"Refs: {_MARKER}x{'a' * 190}\n".encode(), _MARKER + "x", id="over-200-chars"),
     pytest.param(b"Refs: ECHO-MARKER-7f3\n", "ECHO-MARKER-7f3", id="uppercase"),
     pytest.param(b"Refs: \x80ECHO-MARKER-7f3\n", "ECHO-MARKER-7f3", id="non-utf8"),
 ]
@@ -176,7 +178,7 @@ _HOSTILE: Final = [
 
 @pytest.mark.parametrize(("message", "marker"), _HOSTILE)
 def test_a_refused_value_is_counted_and_never_echoed(message: bytes, marker: str) -> None:
-    """C2: an author-controlled value must cost a count, not appear in any output."""
+    """C2: a refused value is counted (an undecodable message: not at all), never echoed."""
     assert marker in repr(message) or marker.encode() in message
     assert marker in message.decode("utf-8", "replace")
 
@@ -197,24 +199,28 @@ def test_a_201_character_valid_shape_id_is_refused_whole() -> None:
     assert "z" * 20 not in repr(result)
 
 
-def test_32_distinct_ids_give_all_edges_for_each_path() -> None:
-    result = _refs(_ids(MAX_REFS_PER_COMMIT), paths=("x.py", "y.py"))
+def test_the_cap_is_recorded_as_32() -> None:
+    assert MAX_REFS_PER_COMMIT == 32
 
-    assert len(result.edges) == 2 * MAX_REFS_PER_COMMIT
+
+def test_32_distinct_ids_give_all_edges_for_each_path() -> None:
+    result = _refs(_ids(32), paths=("x.py", "y.py"))
+
+    assert len(result.edges) == 64
     assert result.capped is False
 
 
 def test_33_distinct_ids_give_no_edges_and_are_capped() -> None:
-    result = _refs(_ids(MAX_REFS_PER_COMMIT + 1))
+    result = _refs(_ids(33))
 
     assert result.edges == ()
     assert result.capped is True
 
 
 def test_a_repeated_id_does_not_count_twice_toward_the_cap() -> None:
-    result = _refs(_ids(MAX_REFS_PER_COMMIT) + "Refs: item-0\n")
+    result = _refs(_ids(32) + "Refs: item-0\n")
 
-    assert len(result.edges) == MAX_REFS_PER_COMMIT
+    assert len(result.edges) == 32
     assert result.capped is False
 
 
@@ -237,12 +243,11 @@ def test_the_capped_digest_is_the_sorted_newline_terminated_sha256_in_any_order(
 
 
 def test_invalid_values_do_not_count_toward_the_cap() -> None:
-    """C3b: 5 refused values beside 32 valid ids must not push the commit over 32."""
     junk = "".join(f"Refs: BAD {n}\n" for n in range(5))
 
-    result = _refs(_ids(MAX_REFS_PER_COMMIT) + junk)
+    result = _refs(_ids(32) + junk)
 
-    assert len(result.edges) == MAX_REFS_PER_COMMIT
+    assert len(result.edges) == 32
     assert result.refused == 5
     assert result.capped is False
 
@@ -293,3 +298,80 @@ def test_an_undecodable_undated_path_capped_commit_keeps_the_independent_flags()
     result = _refs(b"\x80", committed_at=None, paths=None)
 
     assert (result.undecodable, result.undated, result.capped) == (True, True, True)
+
+
+_NON_LF_BREAKS: Final = sorted(
+    {c for c in map(chr, range(0x110000)) if len(("a" + c + "b").splitlines()) == 2} - {"\n"}
+)
+_LISTED_BREAKS: Final = [
+    "\r",
+    chr(0x0B),
+    chr(0x0C),
+    chr(0x1C),
+    chr(0x1D),
+    chr(0x1E),
+    chr(0x85),
+    chr(0x2028),
+    chr(0x2029),
+]
+
+
+def test_the_listed_line_breaks_are_every_one_str_splitlines_honours_besides_lf() -> None:
+    assert sorted(_LISTED_BREAKS) == _NON_LF_BREAKS
+
+
+@pytest.mark.parametrize(
+    "separator", _LISTED_BREAKS, ids=[f"u{ord(c):04x}" for c in _LISTED_BREAKS]
+)
+def test_only_lf_ends_a_line_so_no_other_separator_exposes_a_trailer(separator: str) -> None:
+    """A splitlines()-style split would collect a value ADR-0040 decision 3 keeps in the subject."""
+    result = _refs(f"subject{separator}Refs: a.b")
+
+    assert (result.edges, result.refused) == ((), 0)
+
+
+_SPACE_LIKE: Final = [
+    c for c in map(chr, range(0x110000)) if (c.isspace() or c in string.whitespace) and c != "\n"
+]
+
+
+@pytest.mark.parametrize("suffix", _SPACE_LIKE, ids=[f"u{ord(c):04x}" for c in _SPACE_LIKE])
+def test_only_ascii_whitespace_is_stripped_from_a_value(suffix: str) -> None:
+    """str.strip() or a narrower ASCII set would flip one of these (NBSP, U+0085, VT, FF)."""
+    result = _refs(f"Refs: a.b{suffix}")
+
+    if suffix in string.whitespace:
+        assert [e.target.node_id for e in result.edges] == ["a.b"]
+        assert result.refused == 0
+    else:
+        assert (result.edges, result.refused) == ((), 1)
+
+
+@pytest.mark.parametrize(
+    ("decodable", "dated", "has_paths", "ids"),
+    list(itertools.product([True, False], [True, False], [True, False], [1, 33])),
+)
+def test_the_flags_are_independent_and_edges_need_all_three_clear(
+    decodable: bool, dated: bool, has_paths: bool, ids: int
+) -> None:
+    """The undecodable branch must report capped and undated from the inputs, not a constant."""
+    message = _ids(ids).encode() + (b"" if decodable else b"\x80")
+
+    result = _refs(
+        message,
+        committed_at=_WHEN if dated else None,
+        paths=("x.py",) if has_paths else None,
+    )
+
+    assert result.capped == (not has_paths or (decodable and ids == 33))
+    assert result.undated == (not dated)
+    assert result.undecodable == (not decodable)
+    clear = not (result.capped or result.undated or result.undecodable)
+    assert bool(result.edges) == clear
+
+
+def test_the_capped_digest_keeps_duplicates() -> None:
+    expected = hashlib.sha256(_SHA.encode() + b"\n" + _SHA.encode() + b"\n").hexdigest()
+
+    assert capped_digest([_SHA, _SHA]) == expected
+    assert capped_digest([_SHA, _SHA]) != capped_digest([_SHA])
