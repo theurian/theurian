@@ -290,7 +290,7 @@ def _severity(token: str, *, line: str) -> FindingSeverity:
         ) from exc
 
 
-def keyed_lines(message: str) -> tuple[tuple[int, str], ...]:
+def keyed_lines(message: str, key: str = TRAILER_KEY) -> tuple[tuple[int, str], ...]:
     """The candidate trailer lines of one commit message, with their line indexes.
 
     **The D1 extraction rule, and it lives here because it is grammar.** Which
@@ -302,7 +302,7 @@ def keyed_lines(message: str) -> tuple[tuple[int, str], ...]:
     crosses a boundary the other way.
 
     A candidate is a ``\\n``-delimited line whose first character starts
-    :data:`TRAILER_KEY`: column 0, anywhere in the message. Not git's own
+    ``key`` (:data:`TRAILER_KEY` by default): column 0, anywhere in the message. Not git's own
     ``%(trailers)``, which reads only the last paragraph and would drop the ~82% of
     this repository's trailers that sit ahead of the ``Signed-off-by:`` paragraph;
     and not a stripped or folded line, because a trailer value is exactly one
@@ -314,7 +314,7 @@ def keyed_lines(message: str) -> tuple[tuple[int, str], ...]:
     return tuple(
         (position, line)
         for position, line in enumerate(message.split("\n"))
-        if line.startswith(TRAILER_KEY)
+        if line.startswith(key)
     )
 
 
