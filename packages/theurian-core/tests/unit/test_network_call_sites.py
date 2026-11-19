@@ -331,9 +331,10 @@ NETWORK_CLIENT_SITES = {
 #:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
 #:   ``git fetch``, ``git log`` reads local object storage and the local
 #:   remote-tracking ref without contacting any remote, so it opens no connection
-#:   -- it is on this list only because it spawns a process. Its argument vector is
-#:   four constants (``git log`` + the ``PUBLIC_REF`` module constant + a fixed
-#:   ``--format``); the ref is *pinned*, not a parameter, so nothing a document or
+#:   -- it is on this list only because it spawns a process. Every element of its
+#:   argument vector is fixed by the adapter: string literals, the ``PUBLIC_REF``
+#:   module constant, and a ``--format`` built from the ``_FORMAT`` one; the ref is
+#:   *pinned*, not a parameter, so nothing a document or
 #:   config carries reaches it, and it cannot be handed a URL or remote. Timeout
 #:   ``GIT_TIMEOUT_SECONDS`` (30s). The pinned ref going red is what
 #:   ``test_source_reads_only_origin_main_not_local_branches`` catches -- swapping
