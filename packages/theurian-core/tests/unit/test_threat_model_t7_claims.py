@@ -112,13 +112,9 @@ _BULLET_START: Final = re.compile(r"(?m)^- ")
 SPAWN_BULLET_ANCHOR: Final = "process spawns, structurally"
 
 #: How the bullet states the count, as the phrase rather than as a bare number
-#: word. Every other spelled number the bullet carries, measured at this commit:
-#: "that third **one**"; the retracted "**two** sites" it quotes and the "first
-#: **two**" beside it; the "**four** constants" of the trailer source's argument
-#: vector; and a second **three**, in the sentence recording what the pinned set
-#: has held. So a key matching any spelled number would read a retraction or an
-#: aside as the claim -- and a key matching any *three* would be satisfied by the
-#: record sentence while the sentence that permits the sites said something else.
+#: word. The bullet carries other spelled numbers, among them the retired counts
+#: in the sentence recording what the pinned set has held, so a key matching any
+#: spelled number would read a retraction or an aside as the claim.
 #:
 #: The caller asserts exactly one match, so a rewrite that made the key ambiguous
 #: fails naming both rather than silently reading the first.
@@ -265,7 +261,7 @@ def test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many()
     )
 
 
-# -- the sixth site's argv, held against the adapter that spawns it ------------
+# -- the seventh site's argv, held against the adapter that spawns it ----------
 
 #: The one recorded spawn site T-7 describes as *handed an argument a document
 #: supplies*, and the adapter that owns it. Named here and asserted to be a
