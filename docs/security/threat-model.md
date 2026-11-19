@@ -2106,16 +2106,19 @@ other's blind spots.
   `git log` over the pinned
   `refs/remotes/origin/main` to read `Review-Finding:` trailers; and, since
   ADR-0034's T-15 check landed, `infrastructure/git/committed_check.py`, which
-  runs `git cat-file blob HEAD:<path>` to answer whether the migration file
+  runs `git rev-parse --verify --quiet HEAD:<path>` and
+  `git hash-object --stdin --path=<path>` to answer whether the migration file
   `migrate apply` is about to run is committed unmodified at `HEAD`. The last two
-  are spawns and **not** network clients — `git log` and `git cat-file` read
+  are spawns and **not** network clients — `git log` and `git rev-parse` read
   local object storage (and, for the trailer source, the local remote-tracking
-  ref), contacting no remote — and each takes a fixed vector: the trailer
-  source's is four constants with the ref pinned rather than passed, and the
-  committed check's is four elements whose one built argument begins with the
-  literal `HEAD:`, so a migration filename can neither be read as an option nor
-  name a different revision. Neither can be handed a URL or a remote, so nothing
-  a document or a config carries reaches either. The committed check resolves
+  ref), `git hash-object --stdin` hashes the bytes it is fed, and none contacts a
+  remote — and each takes a fixed vector: the trailer source's is literals and
+  module constants only, with the ref pinned rather than passed, and each of the
+  committed check's two calls carries the migration path in one argument,
+  `HEAD:<path>` or the one-token `--path=<path>`, so a migration filename can
+  neither be read as an option nor name a different revision. Neither can be
+  handed a URL or a remote, so nothing a document or a config carries reaches
+  either. The committed check resolves
   `git` to an absolute path — ADR-0030 clause 5's tier, not the bare-`git` tier
   its `cli/context.py` sibling uses, because this call gates a write — and both
   bound the wait with `GIT_TIMEOUT_SECONDS`. The walk is not a network client
