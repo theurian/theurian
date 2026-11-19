@@ -797,3 +797,11 @@ def test_the_parser_stamp_is_byte_identical_across_pinned_hash_seeds() -> None:
         f"or dict whose order the seed perturbs, so a store would read as stale "
         f"across machines that drew a different seed"
     )
+
+
+def test_keyed_lines_takes_a_non_default_key_and_ignores_the_default_one() -> None:
+    """The ``Refs:`` reader (ADR-0040 decision 3) reuses the column-0 rule with its own key."""
+    message = "Refs: a.b\nReview-Finding: code HIGH x\n Refs: c.d\nRefs:e.f\nRefs: g.h"
+
+    assert keyed_lines(message, key="Refs: ") == ((0, "Refs: a.b"), (4, "Refs: g.h"))
+    assert keyed_lines(message) == ((1, "Review-Finding: code HIGH x"),)
