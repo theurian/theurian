@@ -6,6 +6,7 @@ read -- its positive control -- and then shown leaving the walk unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from pathlib import Path
 import pytest
 from git_isolation_fixtures import (
     TRACE_CASES,
+    clone,
     commit_file,
     forge_commit_graph,
     git,
@@ -383,6 +385,85 @@ def test_a_committer_date_datetime_cannot_hold_reads_as_none_not_a_refusal(
     assert git(repo, "log", "-1", "--format=%cI").strip() == "10000-01-01T00:00:00Z"
 
     assert [commit.committed_at for commit in walk_first_parent(repo).commits] == [None]
+
+
+def _linear(repo: Path, count: int) -> list[str]:
+    """*count* one-file commits, newest first."""
+    new_repo(repo)
+    return [commit_file(repo, f"{n}.txt", f"{n}\n") for n in range(count)][::-1]
+
+
+def _digest(*oids: str) -> str:
+    return hashlib.sha256("".join(f"{oid}\n" for oid in sorted(oids)).encode()).hexdigest()
+
+
+def test_the_shallow_digest_is_over_lines_and_a_line_holding_two_oids_refuses(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    shas = _linear(repo, 5)
+    deep, near = shas[2], shas[1]
+    shallow = repo / ".git" / "shallow"
+    walked = {}
+    descending = "".join(f"{oid}\n" for oid in sorted((deep, near), reverse=True))
+    for shape, text in (("one line", f"{deep} {near}\n"), ("two lines", descending)):
+        shallow.write_text(text, encoding="utf-8")
+        walked[shape] = git(repo, "rev-list", "--first-parent", "HEAD").split()
+    assert walked["one line"] != walked["two lines"], "git reads both shapes alike: no control"
+
+    walk = walk_first_parent(repo)
+    shallow.write_text(f"{deep} {near}\n", encoding="utf-8")
+
+    assert ([c.sha for c in walk.commits], walk.shallow_digest) == (shas[:2], _digest(deep, near))
+    assert _refused(repo).reason == "a shallow-file line is not exactly one object id"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(str.upper, id="uppercase"),
+        pytest.param(lambda oid: oid[1:], id="short"),
+        pytest.param(lambda oid: f"{oid}\r", id="carriage-return"),
+        pytest.param(lambda _oid: "", id="blank"),
+    ],
+)
+def test_a_shallow_line_that_is_not_one_lowercase_oid_of_the_hash_length_refuses(
+    line: Callable[[str], str], tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    shas = _linear(repo, 3)
+    (repo / ".git" / "shallow").write_text(f"{shas[1]}\n{line(shas[2])}\n", encoding="utf-8")
+
+    refusal = _refused(repo)
+
+    assert (refusal.spawn, refusal.reason) == (
+        "rev-parse",
+        "a shallow-file line is not exactly one object id",
+    )
+
+
+def test_a_shallow_path_that_cannot_be_read_refuses(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _linear(repo, 2)
+    (repo / ".git" / "shallow").mkdir()
+
+    assert _refused(repo).reason == "the shallow file cannot be read"
+
+
+def test_a_shallow_list_deepened_during_the_walk_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = tmp_path / "origin"
+    _linear(origin, 4)
+    repo = clone(origin, tmp_path / "repo", "--depth=2")
+    walk = walk_first_parent(repo)
+    assert (len(walk.commits), walk.shallow_digest) == (2, _digest(walk.commits[1].sha))
+    deepen = 'GIT_ALLOW_PROTOCOL=file "$REAL" fetch -q --deepen=1 origin >/dev/null'
+    _shim(tmp_path, monkeypatch, "rev-list", deepen)
+
+    assert _refused(repo).reason == "the shallow list changed during the walk"
+    shallow = (repo / ".git" / "shallow").read_text(encoding="utf-8")
+    assert shallow != f"{walk.commits[1].sha}\n", "the shim did not deepen the clone"
 
 
 def test_the_walk_reads_no_repository_but_the_one_rooted_at_root(

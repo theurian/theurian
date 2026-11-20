@@ -12,6 +12,7 @@ ADR-0030 clause 5's tier, because this read gates a write.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import os
 import re
@@ -78,6 +79,10 @@ _REPORT: Final = (
     "Run 'git --version' and report its output with this message: git printed a stream "
     "this walk is not written against."
 )
+_SHALLOW: Final = (
+    "Run 'git rev-parse --git-path shallow' in the project's repository and rewrite the file it "
+    "names to one lowercase object id per line, then retry."
+)
 
 
 class GitWalkRefusedError(TheurianError):
@@ -141,32 +146,51 @@ def walk_first_parent(root: Path | None) -> FirstParentWalk:
     if git is None:
         raise GitWalkRefusedError("rev-parse", "git is not on PATH", _INSTALL)
     git = str(Path(git).resolve())
-    hex_length, walk_commit = _read_head(git, root)
+    hex_length, shallow, walk_commit = _read_head(git, root)
     if walk_commit is None:
         return _NOTHING
+    digest = _shallow_digest(shallow, hex_length)
     listed = _list_commits(git, root, walk_commit, hex_length)
     paths = _read_paths(git, root, listed)
     stamps = _read_messages(git, root, [sha for sha, _ in listed])
+    if _shallow_digest(shallow, hex_length) != digest:
+        raise GitWalkRefusedError(
+            "rev-parse",
+            "the shallow list changed during the walk",
+            "Wait for the 'git fetch' rewriting the project's shallow list to finish, then retry.",
+        )
     commits = tuple(
         WalkedCommit(sha, at, names, message)
         for (sha, _), names, (at, message) in zip(listed, paths, stamps, strict=True)
     )
-    return FirstParentWalk(walk_commit, commits, None, depth_bounded=False, budget_bounded=False)
+    return FirstParentWalk(walk_commit, commits, digest, depth_bounded=False, budget_bounded=False)
 
 
-def _read_head(git: str, root: Path) -> tuple[int, str | None]:
-    """The hash length and ``HEAD``'s OID, read once; ``None`` when ``HEAD`` names nothing.
+def _read_head(git: str, root: Path) -> tuple[int, Path, str | None]:
+    """The hash length, the shallow file's path and ``HEAD``'s OID, read once; ``None`` when
+    ``HEAD`` names nothing.
 
-    One spawn answers both, so the ``HEAD`` it reads is the repository whose root it prints.
+    One spawn answers all three, so the ``HEAD`` it reads is the repository whose root it
+    prints; ``--git-path`` composes with ``--verify`` and each answer prints in argument order
+    (measured, git 2.56.0).
     ``--verify --quiet`` exits 1 with no line when ``HEAD`` resolves to no object name: an
     unborn branch reads that way, and so does a loose ref holding bytes that are not an OID --
     a direct write to a ref, #1012's residual. A ``HEAD`` naming an absent object prints it and
     refuses at ``rev-list``.
     """
-    args = ("rev-parse", "--show-toplevel", "--show-object-format", "--verify", "--quiet", "HEAD")
+    args = (
+        "rev-parse",
+        "--show-toplevel",
+        "--show-object-format",
+        "--git-path",
+        "shallow",
+        "--verify",
+        "--quiet",
+        "HEAD",
+    )
     with _Child(git, root, args, allowed=(0, 1)) as child:
         lines = list(child.tokens(b"\n"))
-    if len(lines) != 3 - child.returncode:
+    if len(lines) != 4 - child.returncode:
         raise _framing("rev-parse", f"{len(lines)} lines for exit status {child.returncode}")
     if Path(os.fsdecode(lines[0])).resolve() != root.resolve():
         raise GitWalkRefusedError(
@@ -178,7 +202,31 @@ def _read_head(git: str, root: Path) -> tuple[int, str | None]:
     hex_length = _HEX_LENGTHS.get(lines[1])
     if hex_length is None:
         raise _framing("rev-parse", "the object format is neither sha1 nor sha256")
-    return hex_length, _oid(lines[2], hex_length, "rev-parse") if child.returncode == 0 else None
+    head = _oid(lines[3], hex_length, "rev-parse") if child.returncode == 0 else None
+    return hex_length, root / os.fsdecode(lines[2]), head
+
+
+def _shallow_digest(path: Path, hex_length: int) -> str | None:
+    """The SHA-256 of the shallow list's lines, sorted, each newline-terminated; ``None`` with no
+    list.
+
+    git reads one OID from the head of each line and ignores the rest of it, so any other line
+    shape refuses: one line holding two OIDs would digest like two lines and walk unlike them.
+    """
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise GitWalkRefusedError("rev-parse", "the shallow file cannot be read", _SHALLOW) from exc
+    lines = data.split(b"\n")
+    if not lines[-1]:
+        lines.pop()
+    if not all(_is_oid(line, hex_length) for line in lines):
+        raise GitWalkRefusedError(
+            "rev-parse", "a shallow-file line is not exactly one object id", _SHALLOW
+        )
+    return hashlib.sha256(b"".join(line + b"\n" for line in sorted(lines))).hexdigest()
 
 
 def _list_commits(
@@ -263,9 +311,13 @@ def _instant(date: bytes) -> datetime | None:
 
 
 def _oid(token: bytes, hex_length: int, spawn: str) -> str:
-    if re.fullmatch(rb"[0-9a-f]{%d}" % hex_length, token) is None:
+    if not _is_oid(token, hex_length):
         raise _framing(spawn, "a token that should be an object id is not one")
     return token.decode("ascii")
+
+
+def _is_oid(token: bytes, hex_length: int) -> bool:
+    return re.fullmatch(rb"[0-9a-f]{%d}" % hex_length, token) is not None
 
 
 def _framing(spawn: str, reason: str) -> GitWalkRefusedError:
