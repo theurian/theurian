@@ -288,6 +288,9 @@ def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: s
     [
         pytest.param("rev-list", '"$REAL" "$@" | sed 2s/^/g/; exit', id="rev-list-non-oid-line"),
         pytest.param(
+            "rev-list", '"$REAL" "$@" | sed \'1s/$/ g/\'; exit', id="rev-list-non-oid-last-token"
+        ),
+        pytest.param(
             "diff-tree",
             f'sed "\\$s/^[0-9a-f]*/{"1" * 40}/" | "$REAL" "$@"; exit',
             id="diff-tree-drops-an-unknown-commit-with-status-0",
