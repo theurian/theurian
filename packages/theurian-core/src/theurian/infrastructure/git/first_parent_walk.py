@@ -16,6 +16,7 @@ import io
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 from collections.abc import Iterator, Sequence
@@ -286,6 +287,7 @@ class _Child:
                 stdin=subprocess.DEVNULL if feed is None else subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                process_group=0,
             )
         except OSError as exc:
             raise GitWalkRefusedError(self._spawn, "git could not be started", _INSTALL) from exc
@@ -300,14 +302,20 @@ class _Child:
 
     def _expire(self) -> None:
         self._expired.set()
-        self._proc.kill()
+        self._kill()
+
+    def _kill(self) -> None:
+        # The group, not the child: a wrapper git's descendants hold the pipes too. Only an
+        # unreaped leader pins the group id; macOS answers EPERM for a group of one zombie.
+        if self._proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(self._proc.pid, signal.SIGKILL)
 
     def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
-        if self._proc.poll() is None:
-            self._proc.kill()
+        self._kill()
         self._proc.wait()
         self._timer.cancel()
         if self._writer is not None:
