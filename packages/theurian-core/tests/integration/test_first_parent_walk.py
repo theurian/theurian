@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -257,14 +258,15 @@ def test_a_lever_that_moves_an_unhardened_read_leaves_the_walk_unchanged(
 
 
 def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: str) -> None:
-    """A ``git`` first on PATH that runs *action* for *spawn* and execs the real git otherwise."""
+    """A ``git`` first on PATH that runs *action* for a spawn the case pattern *spawn* matches
+    and execs the real git otherwise."""
     real = shutil.which("git")
     assert real is not None
     shim = _write(
         tmp_path / "shim" / "git",
         f'#!/bin/sh\nREAL="{real}"\n'
         "for a; do case $a in rev-parse|rev-list|diff-tree|log) break;; esac; done\n"
-        f'if [ "$a" = {spawn} ]; then {action}; fi\nexec "$REAL" "$@"\n',
+        f'case $a in {spawn}) {action};; esac\nexec "$REAL" "$@"\n',
     )
     shim.chmod(0o755)
     monkeypatch.setenv("PATH", f"{shim.parent}{os.pathsep}{os.environ['PATH']}")
@@ -387,10 +389,15 @@ def test_a_committer_date_datetime_cannot_hold_reads_as_none_not_a_refusal(
     assert [commit.committed_at for commit in walk_first_parent(repo).commits] == [None]
 
 
-def _linear(repo: Path, count: int) -> list[str]:
-    """*count* one-file commits, newest first."""
+def _linear(repo: Path, *sizes: int) -> list[str]:
+    """One commit per size, oldest first, adding that many paths; the shas newest first."""
     new_repo(repo)
-    return [commit_file(repo, f"{n}.txt", f"{n}\n") for n in range(count)][::-1]
+    for n, size in enumerate(sizes):
+        for k in range(size):
+            _write(repo / str(n) / f"{k}.txt", "x\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-q", "-m", f"c{n}")
+    return git(repo, "rev-list", "HEAD").split()
 
 
 def _digest(*oids: str) -> str:
@@ -401,7 +408,7 @@ def test_the_shallow_digest_is_over_lines_and_a_line_holding_two_oids_refuses(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    shas = _linear(repo, 5)
+    shas = _linear(repo, *[1] * 5)
     deep, near = shas[2], shas[1]
     shallow = repo / ".git" / "shallow"
     walked = {}
@@ -431,7 +438,7 @@ def test_a_shallow_line_that_is_not_one_lowercase_oid_of_the_hash_length_refuses
     line: Callable[[str], str], tmp_path: Path
 ) -> None:
     repo = tmp_path / "repo"
-    shas = _linear(repo, 3)
+    shas = _linear(repo, 1, 1, 1)
     (repo / ".git" / "shallow").write_text(f"{shas[1]}\n{line(shas[2])}\n", encoding="utf-8")
 
     refusal = _refused(repo)
@@ -444,7 +451,7 @@ def test_a_shallow_line_that_is_not_one_lowercase_oid_of_the_hash_length_refuses
 
 def test_a_shallow_path_that_cannot_be_read_refuses(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    _linear(repo, 2)
+    _linear(repo, 1, 1)
     (repo / ".git" / "shallow").mkdir()
 
     assert _refused(repo).reason == "the shallow file cannot be read"
@@ -454,7 +461,7 @@ def test_a_shallow_list_deepened_during_the_walk_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     origin = tmp_path / "origin"
-    _linear(origin, 4)
+    _linear(origin, *[1] * 4)
     repo = clone(origin, tmp_path / "repo", "--depth=2")
     walk = walk_first_parent(repo)
     assert (len(walk.commits), walk.shallow_digest) == (2, _digest(walk.commits[1].sha))
@@ -464,6 +471,124 @@ def test_a_shallow_list_deepened_during_the_walk_refuses(
     assert _refused(repo).reason == "the shallow list changed during the walk"
     shallow = (repo / ".git" / "shallow").read_text(encoding="utf-8")
     assert shallow != f"{walk.commits[1].sha}\n", "the shim did not deepen the clone"
+
+
+@pytest.mark.parametrize(("bound", "kept"), [(4, 4), (3, 3)])
+def test_the_depth_bound_stops_the_walk_at_the_same_commit_and_says_so(
+    bound: int, kept: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    shas = _linear(repo, *[1] * 4)
+    monkeypatch.setattr(first_parent_walk, "DEPTH_BOUND", bound)
+
+    walk = walk_first_parent(repo)
+
+    assert [commit.sha for commit in walk.commits] == shas[:kept]
+    assert (walk.depth_bounded, walk.budget_bounded) == (kept < len(shas), False)
+    assert walk_first_parent(repo) == walk
+
+
+@pytest.mark.parametrize(("budget", "kept"), [(6, 3), (5, 2)])
+def test_the_entry_budget_counts_a_capped_commit_and_stops_at_the_commit_crossing_it(
+    budget: int, kept: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Newest first the commits list 1, 3 and 2 paths; the 3-path commit is over the cap."""
+    repo = tmp_path / "repo"
+    shas = _linear(repo, 2, 3, 1)
+    monkeypatch.setattr(first_parent_walk, "PATH_CAP", 2)
+    monkeypatch.setattr(first_parent_walk, "ENTRY_BUDGET", budget)
+
+    walk = walk_first_parent(repo)
+
+    assert [commit.sha for commit in walk.commits] == shas[:kept]
+    assert walk.commits[1].paths is None
+    assert (walk.depth_bounded, walk.budget_bounded) == (False, kept < len(shas))
+    assert walk_first_parent(repo) == walk
+
+
+@pytest.mark.parametrize(("cap", "paths"), [(3, ("0/0.txt", "0/1.txt", "0/2.txt")), (2, None)])
+def test_a_commit_listing_more_paths_than_the_cap_lists_none(
+    cap: int, paths: tuple[str, ...] | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    _linear(repo, 3)
+    monkeypatch.setattr(first_parent_walk, "PATH_CAP", cap)
+
+    assert [commit.paths for commit in walk_first_parent(repo).commits] == [paths]
+
+
+def _stream_bytes(repo: Path) -> tuple[list[int], list[int], list[int]]:
+    """Each first-parent commit's bytes on rev-list's, diff-tree's and log's stdout, newest first.
+
+    For a linear history the single-commit reads print what the walk's streams do (measured).
+    """
+    lines = git(repo, "rev-list", "--first-parent", "--parents", "HEAD").splitlines(keepends=True)
+    shas = [line.split()[0] for line in lines]
+    diff = ("diff-tree", "-r", "--root", "--no-renames", "--name-status", "-z", "--always")
+    log = ("log", "-z", "--max-count=1", "--format=tformat:%H%x00%cI%x00%B")
+    return (
+        [len(line) for line in lines],
+        [len(git(repo, *diff, sha)) for sha in shas],
+        [len(git(repo, *log, sha)) for sha in shas],
+    )
+
+
+Budget = Callable[[list[int], list[int], list[int]], int]
+
+
+@pytest.mark.parametrize(
+    ("budget", "kept", "fed"),
+    [
+        pytest.param(lambda rl, _d, _l: rl[0] - 1, 0, (0, None), id="rev-list-crosses"),
+        pytest.param(
+            lambda rl, dt, _l: sum(rl[:2]) + sum(dt[:2]) - 1, 1, (3, 1), id="diff-tree-crosses"
+        ),
+        pytest.param(
+            lambda rl, dt, lg: sum(rl[:2] + dt[:2] + lg[:2]) - 1, 1, (3, 3), id="log-crosses"
+        ),
+        pytest.param(lambda *s: sum(map(sum, s)) - 1, 2, (3, 3), id="the-last-commit-crosses"),
+        pytest.param(lambda *s: sum(map(sum, s)), 3, (3, 3), id="nothing-crosses"),
+    ],
+)
+def test_the_byte_budget_stops_every_stream_at_the_commit_that_would_cross_it(
+    budget: Budget,
+    kept: int,
+    fed: tuple[int, int | None],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """*fed* is how many commits diff-tree and log were handed, ``None`` for a log never run."""
+    repo = tmp_path / "repo"
+    shas = _linear(repo, 2, 3, 1)
+    monkeypatch.setattr(first_parent_walk, "BYTE_BUDGET", budget(*_stream_bytes(repo)))
+    record = tmp_path / "record"
+    record.mkdir()
+    keep = f'echo "$@" >"{record}/$a"; cat >"{record}/$a.in"; "$REAL" "$@" <"{record}/$a.in"; exit'
+    _shim(tmp_path, monkeypatch, "diff-tree|log", keep)
+
+    walk = walk_first_parent(repo)
+
+    log = record / "log"
+    counted = re.search(r"--max-count=(\d+)", log.read_text()) if log.exists() else None
+    feed = (record / "diff-tree.in").read_text().splitlines()
+    assert (len(feed), int(counted[1]) if counted else None) == fed
+    assert [commit.sha for commit in walk.commits] == shas[:kept]
+    assert (walk.depth_bounded, walk.budget_bounded) == (False, kept < len(shas))
+    assert walk_first_parent(repo) == walk
+
+
+def test_a_token_outgrowing_the_byte_budget_ends_the_read_and_is_not_read_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    sha = _linear(repo, 1)[0]
+    monkeypatch.setattr(first_parent_walk, "BYTE_BUDGET", 1 << 16)
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 2.0)
+    _shim(tmp_path, monkeypatch, "log", "while :; do printf %0512d 0; done")
+
+    assert walk_first_parent(repo) == FirstParentWalk(
+        sha, (), None, depth_bounded=False, budget_bounded=True
+    )
 
 
 def test_the_walk_reads_no_repository_but_the_one_rooted_at_root(
