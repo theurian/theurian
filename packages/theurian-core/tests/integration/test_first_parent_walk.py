@@ -311,19 +311,21 @@ def test_a_stream_the_framing_cannot_read_refuses(
 
 
 @pytest.mark.parametrize("spawn", ["rev-parse", "rev-list", "diff-tree", "log"])
-def test_a_spawn_outliving_the_timeout_refuses_and_names_itself(
+def test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself(
     spawn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The shim is a non-exec wrapper whose sleeping child holds stdout: killing the wrapper
+    alone left the read blocked until that child exited (#1058 round one, X1)."""
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 2.0)
-    _shim(tmp_path, monkeypatch, spawn, "exec sleep 60")
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 1.0)
+    _shim(tmp_path, monkeypatch, spawn, "sleep 30; exit")
     started = time.monotonic()
 
     refusal = _refused(repo)
 
-    assert time.monotonic() - started < 30, "the walk waited for git instead of killing it"
-    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 2-second bound")
+    assert time.monotonic() - started < 3, "the walk waited past its bound for git"
+    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 1-second bound")
 
 
 def test_a_git_not_on_path_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
