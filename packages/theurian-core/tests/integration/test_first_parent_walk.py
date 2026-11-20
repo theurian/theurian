@@ -14,6 +14,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from git_isolation_fixtures import (
@@ -33,6 +34,7 @@ from theurian.infrastructure.git.first_parent_walk import (
     WalkedCommit,
     walk_first_parent,
 )
+from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 
 pytestmark = pytest.mark.integration
 
@@ -326,6 +328,39 @@ def test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself
 
     assert time.monotonic() - started < 3, "the walk waited past its bound for git"
     assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 1-second bound")
+
+
+def test_the_walk_spawns_trailer_sources_log_prefix_unchanged_plus_decision_2s_switches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B9 (#1033). Each side's argv is captured at its spawn call, not read off its source, so a
+    flag added at the call site rather than in the prefix constant is compared too."""
+    spawned: list[list[str]] = []
+
+    def run(args: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        spawned.append(args)
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    def popen(args: list[str], **_: object) -> NoReturn:
+        spawned.append(args)
+        raise OSError
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+    GitTrailerFindingSource(tmp_path).load_findings()
+    with pytest.raises(GitWalkRefusedError):
+        walk_first_parent(tmp_path)
+
+    trailer, walk = spawned
+    assert walk[1 : walk.index("rev-parse")] == [
+        "--no-pager",
+        *trailer[1 : trailer.index("log")],
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.multiPackIndex=false",
+    ]
 
 
 def test_a_git_not_on_path_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
