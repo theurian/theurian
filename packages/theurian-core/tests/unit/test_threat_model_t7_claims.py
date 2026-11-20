@@ -52,8 +52,12 @@ coincide today, and the failure message reports both: a module that reached two
 watched names would take this RED with the prose innocent, and the answer then
 is to say in the entry which of the two figures it states, not to delete the pin.
 
-Pure in the sense the other claim pins are: four files read as text -- the threat
-model, the spawn-site module, the adapter source, and the core changelog -- no
+**And (4), two more of the bullet's sentences against their sources**: the subcommands
+it says the walk runs, and that the trailer source's vector is literals and module
+constants only.
+
+Pure in the sense the other claim pins are: files read as text -- the threat
+model, the spawn-site module, the three git modules, and the core changelog -- no
 database, socket or temporary directory.
 """
 
@@ -661,3 +665,79 @@ def test_the_fix_commit_site_this_module_slices_on_is_a_pinned_spawn_site() -> N
         f"`CALLER_REACHABLE_SPAWN_SITES` in the same change"
     )
     assert FIX_COMMIT_ADAPTER.is_file(), f"{FIX_COMMIT_ADAPTER} is not in the tree"
+
+
+# -- the walk's and the trailer source's vectors, held against T-7's sentences ---------
+
+GIT_PACKAGE: Final = REPO_ROOT / "packages/theurian-core/src/theurian/infrastructure/git"
+_WALK_CLAUSE: Final = re.compile(r"first_parent_walk\.py`, which runs (.+?) to read")
+
+
+def _bindings(body: list[ast.stmt]) -> dict[str, ast.expr]:
+    """Each name *body* assigns at its own level, to the expression assigned."""
+    return {
+        target.id: node.value
+        for node in body
+        if isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name)
+    }
+
+
+def _walk_subcommands() -> set[str]:
+    """The first token of every vector the walk hands ``_Child``, a name followed to its tuple."""
+    tree = ast.parse((GIT_PACKAGE / "first_parent_walk.py").read_text(encoding="utf-8"))
+    module = _bindings(tree.body)
+    spawned: set[str] = set()
+    for function in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        names = {**module, **_bindings(function.body)}
+        for call in ast.walk(function):
+            if not (isinstance(call, ast.Call) and ast.unparse(call.func) == "_Child"):
+                continue
+            vector = call.args[2]
+            if isinstance(vector, ast.Name):
+                vector = names[vector.id]
+            assert isinstance(vector, ast.Tuple), ast.unparse(vector)
+            spawned.add(ast.literal_eval(vector.elts[0]))
+    return spawned
+
+
+def test_t7s_walk_sentence_names_the_subcommands_the_walk_spawns() -> None:
+    clauses = _WALK_CLAUSE.findall(_folded(_spawn_bullet_raw()))
+
+    assert len(clauses) == 1, f"`{_WALK_CLAUSE.pattern}` matches T-7's bullet {len(clauses)} times"
+    assert set(_CODE_SPAN.findall(clauses[0])) == _walk_subcommands()
+
+
+def _is_final(annotation: ast.expr) -> bool:
+    return ast.unparse(annotation).partition("[")[0] == "Final"
+
+
+def test_every_token_the_trailer_source_hands_git_is_a_literal_or_a_module_final() -> None:
+    """T-7: the trailer source's vector "is literals and module constants only"."""
+    tree = ast.parse((GIT_PACKAGE / "trailer_source.py").read_text(encoding="utf-8"))
+    finals = {
+        node.target.id
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and _is_final(node.annotation)
+    }
+    (git_log,) = [
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_git_log"
+    ]
+    vector = _bindings(git_log.body)["args"]
+    assert isinstance(vector, ast.List) and ast.literal_eval(vector.elts[0]) == "git"
+
+    def fixed(token: ast.expr) -> bool:
+        if isinstance(token, ast.JoinedStr):
+            return all(
+                isinstance(part, ast.Constant)
+                or (isinstance(part, ast.FormattedValue) and fixed(part.value))
+                for part in token.values
+            )
+        return (isinstance(token, ast.Constant) and isinstance(token.value, str)) or (
+            isinstance(token, ast.Name) and token.id in finals
+        )
+
+    assert [ast.unparse(token) for token in vector.elts if not fixed(token)] == []
