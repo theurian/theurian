@@ -306,6 +306,7 @@ def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: s
             '"$REAL" "$@" | awk \'NR>1{print p}{p=$0}END{printf "%s", p}\'; exit',
             id="rev-list-unterminated",
         ),
+        pytest.param("rev-list", '"$REAL" "$@"; printf g; exit', id="rev-list-trailing-fragment"),
         pytest.param("rev-list", '"$REAL" "$@" | sed 2d; exit', id="rev-list-skips-a-commit"),
         pytest.param("rev-list", '"$REAL" "$@" | sed \\$d; exit', id="rev-list-drops-the-root"),
         pytest.param("log", 'exec "$REAL" "$@" --reverse', id="log-out-of-sequence"),
