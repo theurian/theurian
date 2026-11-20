@@ -41,6 +41,11 @@ pytestmark = pytest.mark.integration
 MAPPING = '[submodule "m"]\n\tpath = m\n\turl = ./m\n'
 IGNORED = MAPPING + "\tignore = all\n"
 NOTHING = FirstParentWalk(None, (), None, depth_bounded=False, budget_bounded=False)
+#: Signs and "verifies" alike: git needs only the status line to sign, and log shows its stderr.
+GPG = (
+    "#!/bin/sh\ncat >/dev/null\nprintf '\\n[GNUPG:] SIG_CREATED \\n' >&2\n"
+    "printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nx\\n-----END PGP SIGNATURE-----\\n'\n"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -54,9 +59,10 @@ def _no_developer_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def _history(repo: Path) -> Path:
-    """Newest first: an empty commit; a Latin-1 message adding an OID-named path, ``z.txt`` and
-    a non-UTF-8 path; a submodule bump; its addition, whose committed ``.gitmodules`` ignores it
-    (the worktree's does not); a side-branch merge; ``main.txt``; the root."""
+    """Newest first: an empty signed commit; a Latin-1 message adding an OID-named path,
+    ``z.txt`` and a non-UTF-8 path; a submodule bump; its addition, whose committed
+    ``.gitmodules`` ignores it (the worktree's does not); a side-branch merge; ``main.txt``; the
+    root."""
     new_repo(repo)
     root = commit_file(repo, "a.txt", "a\n", "root")
     git(repo, "checkout", "-q", "-b", "side")
@@ -78,7 +84,9 @@ def _history(repo: Path) -> Path:
     latin = repo.parent / "latin.msg"
     latin.write_bytes(b"caf\xe9\n")
     git(repo, "-c", "i18n.commitEncoding=ISO-8859-1", "commit", "-q", "-F", str(latin))
-    git(repo, "commit", "-q", "--allow-empty", "-m", "empty")
+    gpg = _write(repo.parent / "gpg", GPG)
+    gpg.chmod(0o755)
+    git(repo, "-c", f"gpg.program={gpg}", "commit", "-qS", "--allow-empty", "-m", "empty")
     (repo / ".gitmodules").write_text(MAPPING, encoding="utf-8")
     return repo
 
@@ -219,9 +227,8 @@ LEVERS: dict[str, Lever] = {
     "env-GIT_SHALLOW_FILE": lambda r, t, mp: mp.setenv(
         "GIT_SHALLOW_FILE", str(_write(t / "shallow", _rev(r, "HEAD~1") + "\n"))
     ),
-    "env-GIT_CONFIG_PARAMETERS": lambda _r, _t, mp: mp.setenv(
-        "GIT_CONFIG_PARAMETERS", "'log.showroot'='false'"
-    ),
+    # Unparseable, so git exits: a parsed key the prefix pins would lose to its later -c.
+    "env-GIT_CONFIG_PARAMETERS": lambda _r, _t, mp: mp.setenv("GIT_CONFIG_PARAMETERS", "'"),
     "config-system": _system_config,
     "config-global": lambda _r, t, _mp: _write(t / "home" / ".gitconfig", HOSTILE),
     "config-repo": _repo_config,
@@ -239,7 +246,9 @@ LEVERS: dict[str, Lever] = {
     "gitmodules-index": lambda r, _t, _mp: (r / ".gitmodules").unlink(),
     "gitmodules-head": _gitmodules_head,
     "diff-ignoreSubmodules": _config(("diff.ignoreSubmodules", "all")),
-    "log-showRoot": _config(("log.showRoot", "false")),
+    "log-showSignature": lambda r, t, mp: _config(
+        ("log.showSignature", "true"), ("gpg.program", str(r.parent / "gpg"))
+    )(r, t, mp),
     "i18n-logOutputEncoding": _config(("i18n.logOutputEncoding", "ISO-8859-1")),
 }
 
@@ -363,12 +372,39 @@ def test_the_walk_spawns_trailer_sources_log_prefix_unchanged_plus_decision_2s_s
     ]
 
 
-def test_a_git_not_on_path_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("planted", "reason"),
+    [
+        pytest.param(False, "git is not on PATH", id="not-on-path"),
+        pytest.param(True, "git could not be started", id="exec-format-error"),
+    ],
+)
+def test_a_git_that_cannot_run_refuses(
+    planted: bool, reason: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
-    monkeypatch.setenv("PATH", str(tmp_path / "no-git"))
+    if planted:
+        _write(tmp_path / "bin" / "git", "").chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
 
-    assert _refused(repo).spawn == "rev-parse"
+    refusal = _refused(repo)
+
+    assert (refusal.spawn, refusal.reason) == ("rev-parse", reason)
+
+
+def test_a_relative_path_entry_runs_the_git_beside_the_process_not_the_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0030 clause 5: the binary is resolved before the spawn, whose cwd is the repository."""
+    repo = new_repo(tmp_path / "repo")
+    sha = commit_file(repo, "a.txt", "a\n")
+    for where, body in ((tmp_path, f'exec "{shutil.which("git")}" "$@"'), (repo, "exit 3")):
+        _write(where / "bin" / "git", f"#!/bin/sh\n{body}\n").chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{os.environ['PATH']}")
+
+    assert [commit.sha for commit in walk_first_parent(repo).commits] == [sha]
 
 
 def test_an_unborn_head_walks_nothing(tmp_path: Path) -> None:
@@ -376,20 +412,20 @@ def test_an_unborn_head_walks_nothing(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("spawn", "break_head"),
+    ("expected", "break_head"),
     [
         pytest.param(
-            "rev-parse",
+            ("rev-parse", "git exited with status 128"),
             _config(("core.repositoryformatversion", "1"), ("extensions.unheardOf", "true")),
             id="git-cannot-open-the-repository",
         ),
         pytest.param(
-            "rev-list",
+            ("rev-list", "git exited with status 128"),
             lambda r, _t, _mp: _write(r / ".git" / "refs" / "heads" / "main", "1" * 40 + "\n"),
             id="head-names-an-absent-object",
         ),
         pytest.param(
-            "rev-list",
+            ("rev-list", "a line is not the walk commit or the last parent"),
             lambda r, _t, _mp: [
                 git(r, "tag", "-a", "t", "-m", "t"),
                 _write(r / ".git" / "refs" / "heads" / "main", _rev(r, "t") + "\n"),
@@ -399,13 +435,44 @@ def test_an_unborn_head_walks_nothing(tmp_path: Path) -> None:
     ],
 )
 def test_a_head_git_cannot_read_refuses(
-    spawn: str, break_head: Lever, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    expected: tuple[str, str],
+    break_head: Lever,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
+    """The first two make git print ``fatal:`` lines, which must not reach the caller's stderr."""
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
     break_head(repo, tmp_path, monkeypatch)
 
-    assert _refused(repo).spawn == spawn
+    refusal = _refused(repo)
+
+    assert (refusal.spawn, refusal.reason) == expected
+    assert capfd.readouterr().err == ""
+
+
+def test_a_sha256_repository_walks_with_a_nested_path_whole(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "--object-format=sha256")
+    sha = commit_file(repo, "docs/adr/x.md", "x\n")
+
+    walk = walk_first_parent(repo)
+
+    assert [(commit.sha, commit.paths) for commit in walk.commits] == [(sha, ("docs/adr/x.md",))]
+
+
+def test_a_stream_read_seven_bytes_at_a_time_walks_alike(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git flushes each record whole, so at the shipped chunk no token spans two reads (measured
+    on 1,500 commits)."""
+    repo = _history(tmp_path / "repo")
+    walk = walk_first_parent(repo)
+    monkeypatch.setattr(first_parent_walk, "_CHUNK", 7)
+
+    assert walk_first_parent(repo) == walk
 
 
 def test_a_committer_date_datetime_cannot_hold_reads_as_none_not_a_refusal(
@@ -577,8 +644,12 @@ Budget = Callable[[list[int], list[int], list[int]], int]
     ("budget", "kept", "fed"),
     [
         pytest.param(lambda rl, _d, _l: rl[0] - 1, 0, (0, None), id="rev-list-crosses"),
+        pytest.param(lambda rl, _d, _l: rl[0], 0, (1, None), id="rev-list-reaches"),
         pytest.param(
             lambda rl, dt, _l: sum(rl[:2]) + sum(dt[:2]) - 1, 1, (3, 1), id="diff-tree-crosses"
+        ),
+        pytest.param(
+            lambda rl, dt, _l: sum(rl[:2]) + sum(dt[:2]), 1, (3, 2), id="diff-tree-reaches"
         ),
         pytest.param(
             lambda rl, dt, lg: sum(rl[:2] + dt[:2] + lg[:2]) - 1, 1, (3, 3), id="log-crosses"
@@ -620,12 +691,14 @@ def test_a_token_outgrowing_the_byte_budget_ends_the_read_and_is_not_read_whole(
     repo = tmp_path / "repo"
     sha = _linear(repo, 1)[0]
     monkeypatch.setattr(first_parent_walk, "BYTE_BUDGET", 1 << 16)
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 10.0)
     _shim(tmp_path, monkeypatch, "log", "while :; do printf %0512d 0; done")
+    started = time.monotonic()
 
-    assert walk_first_parent(repo) == FirstParentWalk(
-        sha, (), None, depth_bounded=False, budget_bounded=True
-    )
+    walk = walk_first_parent(repo)
+
+    assert time.monotonic() - started < 3, "the walk left git writing until the timeout"
+    assert walk == FirstParentWalk(sha, (), None, depth_bounded=False, budget_bounded=True)
 
 
 def test_the_walk_reads_no_repository_but_the_one_rooted_at_root(
@@ -641,9 +714,11 @@ def test_the_walk_reads_no_repository_but_the_one_rooted_at_root(
     inner_sha = commit_file(inner, "i.txt", "i\n")
     outside = tmp_path / "plain"
     outside.mkdir()
+    (tmp_path / "link").symlink_to(inner)
 
     assert (_refused(inside).spawn, _refused(outside).spawn) == ("rev-parse", "rev-parse")
     assert [commit.sha for commit in walk_first_parent(inner).commits] == [inner_sha]
+    assert [commit.sha for commit in walk_first_parent(tmp_path / "link").commits] == [inner_sha]
     assert walk_first_parent(None) == NOTHING
 
 
