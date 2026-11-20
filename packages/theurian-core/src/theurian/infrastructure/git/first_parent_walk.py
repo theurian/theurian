@@ -184,14 +184,23 @@ def _read_head(git: str, root: Path) -> tuple[int, str | None]:
 def _list_commits(
     git: str, root: Path, walk_commit: str, hex_length: int
 ) -> list[tuple[str, str | None]]:
-    """``(commit, first parent)`` per first-parent commit; every token on a line is an OID."""
+    """``(commit, first parent)`` per first-parent commit; every token on a line is an OID.
+
+    Each line is the previous line's first parent, and the list ends at a commit git lists with
+    no parent: a root, or a shallow-list commit (measured: a ``--depth=2`` clone lists its
+    boundary commit alone on its line).
+    """
     listed: list[tuple[str, str | None]] = []
+    expected: str | None = walk_commit
     with _Child(git, root, ("rev-list", "--first-parent", "--parents", walk_commit)) as child:
         for line in child.tokens(b"\n"):
             oids = [_oid(token, hex_length, "rev-list") for token in line.split(b" ")]
-            listed.append((oids[0], oids[1] if len(oids) > 1 else None))
-    if not listed or listed[0][0] != walk_commit:
-        raise _framing("rev-list", "the first line is not the walk commit")
+            if oids[0] != expected:
+                raise _framing("rev-list", "a line is not the walk commit or the last parent")
+            expected = oids[1] if len(oids) > 1 else None
+            listed.append((oids[0], expected))
+    if expected is not None:
+        raise _framing("rev-list", "the list ended at a commit with a parent")
     return listed
 
 
