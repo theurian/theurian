@@ -696,7 +696,9 @@ def test_a_token_outgrowing_the_byte_budget_ends_the_read_and_is_not_read_whole(
     sha = _linear(repo, 1)[0]
     monkeypatch.setattr(first_parent_walk, "BYTE_BUDGET", 1 << 16)
     monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 10.0)
-    _shim(tmp_path, monkeypatch, "log", "while :; do printf %0512d 0; done")
+    # The background kill ends the writer if neither the early leave nor the timer can.
+    endless = "(sleep 20; kill $$) & while :; do printf %0512d 0; done"
+    _shim(tmp_path, monkeypatch, "log", endless)
     started = time.monotonic()
 
     walk = walk_first_parent(repo)
