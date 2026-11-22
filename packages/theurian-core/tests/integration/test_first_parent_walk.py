@@ -679,12 +679,12 @@ def test_a_shallow_list_deepened_during_the_walk_refuses(
 
 
 @pytest.mark.parametrize("object_format", ["sha1", "sha256"])
-@pytest.mark.parametrize(("depth", "bound"), [(1, 9), (2, 9), (3, 2), (4, 2)])
+@pytest.mark.parametrize(("depth", "bound"), [(1, 9), (2, 9), (3, 2), (4, 2), (5, 9)])
 def test_a_shallow_clone_leaves_its_boundary_commit_out_of_the_walk(
     depth: int, bound: int, object_format: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The boundary's parent is absent, so its paths were its whole tree and it read like a
-    root (#1092 round one, C-M1); one past the depth bound, it is what ends the walk."""
+    """A shallow-listed chain end is dropped: a boundary, whose whole tree would read as its change
+    (#1092 C-M1), or at depth 5 the root (C2-H1); one past the depth bound, it ends the walk."""
     monkeypatch.setenv("GIT_DEFAULT_HASH", object_format)
     origin = tmp_path / "origin"
     shas = _linear(origin, *[1] * 5)
