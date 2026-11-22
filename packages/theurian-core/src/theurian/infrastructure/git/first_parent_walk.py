@@ -5,8 +5,11 @@ one OID ``HEAD`` resolved to, under #1012's environment and argv prefix plus dec
 flags; ``test_first_parent_walk.py`` drives each lever decision 2 names and shows it moving an
 unhardened read but not this one. A git that fails, outlives :data:`GIT_TIMEOUT_SECONDS` or
 prints a stream the framing cannot read refuses with :class:`GitWalkRefusedError`, never
-degrading to fewer commits. The binary is resolved to an absolute path on each call --
-ADR-0030 clause 5's tier, because this read gates a write.
+degrading to fewer commits. Each spawn's timeout is a deadline, not a wait for pipe EOF
+(#1092 round one): at it, git's process group and then git are killed and the walk refuses at
+once. A descendant that left the group is left running; holding stdout at the deadline, it is
+reported by that refusal. The binary is resolved to an absolute path on each call -- ADR-0030
+clause 5's tier, because this read gates a write.
 """
 
 from __future__ import annotations
@@ -16,15 +19,17 @@ import hashlib
 import io
 import os
 import re
+import selectors
 import shutil
 import signal
 import subprocess
-import threading
+import tempfile
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Final, Literal, Self, cast, final
+from typing import IO, Final, Literal, NoReturn, Self, cast, final
 
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.environment import child_environment
@@ -90,6 +95,10 @@ _REPORT: Final = (
 _SHALLOW: Final = (
     "Run 'git rev-parse --git-path shallow' in the project's repository and rewrite the file it "
     "names to one lowercase object id per line, then retry."
+)
+_STAGE: Final = (
+    "Run 'python3 -c \"import tempfile; print(tempfile.gettempdir())\"', free space in the "
+    "directory it prints or set TMPDIR to a writable one, then retry."
 )
 
 
@@ -384,7 +393,7 @@ def _framing(spawn: str, reason: str) -> GitWalkRefusedError:
 
 @final
 class _Child:
-    """One git spawn: stdout read in chunks, killed at the timeout or when the reader leaves."""
+    """One git spawn: stdout read in chunks, killed at its deadline or when the reader leaves."""
 
     def __init__(
         self,
@@ -398,37 +407,43 @@ class _Child:
         self._spawn = args[0]
         self._allowed = allowed
         self.returncode = 0
-        try:
-            self._proc = subprocess.Popen(  # noqa: S603 - fixed vector but for the resolved git path, validated OIDs and log's --max-count integer
-                [git, *_PREFIX, *args],
-                cwd=root,
-                env=child_environment(os.environ),
-                stdin=subprocess.DEVNULL if feed is None else subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                process_group=0,
-            )
-        except OSError as exc:
-            raise GitWalkRefusedError(self._spawn, "git could not be started", _INSTALL) from exc
+        with _stdin(self._spawn, feed) as stdin:
+            try:
+                self._proc = subprocess.Popen(  # noqa: S603 - fixed vector but for the resolved git path, validated OIDs and log's --max-count integer
+                    [git, *_PREFIX, *args],
+                    cwd=root,
+                    env=child_environment(os.environ),
+                    stdin=stdin,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    process_group=0,
+                )
+            except OSError as exc:
+                raise GitWalkRefusedError(
+                    self._spawn, "git could not be started", _INSTALL
+                ) from exc
+        self._deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
         self._stdout = cast("io.BufferedReader", self._proc.stdout)
-        self._expired = threading.Event()
-        self._timer = threading.Timer(GIT_TIMEOUT_SECONDS, self._expire)
-        self._timer.start()
-        self._writer: threading.Thread | None = None
-        if feed is not None:
-            self._writer = threading.Thread(target=_write, args=(self._proc.stdin, feed))
-            self._writer.start()
-
-    def _expire(self) -> None:
-        self._expired.set()
-        self._kill()
+        self._ready = selectors.DefaultSelector()
+        self._ready.register(self._stdout, selectors.EVENT_READ)
 
     def _kill(self) -> None:
-        # The group, not the child: a wrapper git's descendants hold the pipes too. Only an
-        # unreaped leader pins the group id; macOS answers EPERM for a group of one zombie.
+        # The group, then git: a wrapper git's descendants hold stdout too, and git may have left
+        # the group. Only while the leader is unreaped is its pid sure to name this group; macOS
+        # answers EPERM for a group whose one member is that zombie.
         if self._proc.returncode is None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(self._proc.pid, signal.SIGKILL)
+            self._proc.kill()
+
+    def _expire(self) -> NoReturn:
+        self._kill()
+        raise GitWalkRefusedError(
+            self._spawn,
+            f"git outlived the {GIT_TIMEOUT_SECONDS:g}-second bound",
+            f"Run 'git gc' in the project's repository so 'git {self._spawn}' finishes "
+            f"within {GIT_TIMEOUT_SECONDS:g} seconds, then retry.",
+        )
 
     def __enter__(self) -> Self:
         return self
@@ -436,20 +451,18 @@ class _Child:
     def __exit__(self, *_: object) -> None:
         self._kill()
         self._proc.wait()
-        self._timer.cancel()
-        if self._writer is not None:
-            self._writer.join()
+        self._ready.close()
         self._stdout.close()
 
     def tokens(self, separator: bytes) -> Iterator[bytes]:
         """Each separator-terminated token, as it completes; the stream must end on one.
 
-        A token outgrowing :data:`BYTE_BUDGET` ends the stream unfinished: whatever holds it
-        crosses the budget, so it is yielded as read and git is left to the kill.
+        A token outgrowing :data:`BYTE_BUDGET` ends the stream unfinished: it is yielded as read
+        and git is left to the kill.
         """
         pieces: list[bytes] = []
         pending = 0
-        while chunk := self._stdout.read1(_CHUNK):
+        while chunk := self._read():
             *done, rest = chunk.split(separator)
             for part in done:
                 yield b"".join([*pieces, part])
@@ -461,16 +474,17 @@ class _Child:
                 return
         self._settle(unterminated=any(pieces))
 
+    def _read(self) -> bytes:
+        left = self._deadline - time.monotonic()
+        if left <= 0 or not self._ready.select(left):
+            self._expire()
+        return self._stdout.read1(_CHUNK)
+
     def _settle(self, *, unterminated: bool) -> None:
-        self.returncode = self._proc.wait()
-        self._timer.cancel()
-        if self._expired.is_set():
-            raise GitWalkRefusedError(
-                self._spawn,
-                f"git outlived the {GIT_TIMEOUT_SECONDS:g}-second bound",
-                f"Run 'git gc' in the project's repository so 'git {self._spawn}' finishes "
-                f"within {GIT_TIMEOUT_SECONDS:g} seconds, then retry.",
-            )
+        try:
+            self.returncode = self._proc.wait(self._deadline - time.monotonic())
+        except subprocess.TimeoutExpired:
+            self._expire()
         if self.returncode not in self._allowed:
             raise GitWalkRefusedError(
                 self._spawn, f"git exited with status {self.returncode}", _REPAIR
@@ -479,7 +493,19 @@ class _Child:
             raise _framing(self._spawn, "the output ended inside a record")
 
 
-def _write(stdin: IO[bytes], data: bytes) -> None:
-    # A git that exits or is killed first closes the pipe; what it did not read is moot.
-    with contextlib.suppress(OSError, ValueError), stdin:
-        stdin.write(data)
+@contextlib.contextmanager
+def _stdin(spawn: str, feed: bytes | None) -> Iterator[IO[bytes] | int]:
+    """*feed* in an unlinked file, so no writer of ours waits on git reading it."""
+    if feed is None:
+        yield subprocess.DEVNULL
+        return
+    with contextlib.ExitStack() as stack:
+        try:
+            staged = stack.enter_context(tempfile.TemporaryFile())
+            staged.write(feed)
+            staged.seek(0)
+        except OSError as exc:
+            raise GitWalkRefusedError(
+                spawn, "the commit list could not be written to a temporary file", _STAGE
+            ) from exc
+        yield staged
