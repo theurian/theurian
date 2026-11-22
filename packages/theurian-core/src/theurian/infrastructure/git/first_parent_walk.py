@@ -133,7 +133,8 @@ class WalkedCommit:
 
 @dataclass(frozen=True, slots=True)
 class FirstParentWalk:
-    """The commits from ``walk_commit`` down its first parents, the walk commit first.
+    """The commits from ``walk_commit`` down its first parents, the walk commit first, without
+    the shallow-list commit the chain may end at: a depth-1 clone's walk holds none.
 
     A set ``*_bounded`` flag names the bound that stopped the walk before a root or the shallow
     list.
@@ -172,13 +173,13 @@ def walk_first_parent(root: Path | None) -> FirstParentWalk:
     hex_length, shallow, walk_commit = _read_head(git, root)
     if walk_commit is None:
         return _NOTHING
-    digest = _shallow_digest(shallow, hex_length)
-    listed, spent, bound = _list_commits(git, root, walk_commit, hex_length)
+    digest, boundary = _read_shallow(shallow, hex_length)
+    listed, spent, bound = _list_commits(git, root, walk_commit, hex_length, boundary)
     paths, spent = _read_paths(git, root, listed, spent)
     stamps = _read_messages(git, root, [sha for sha, _ in listed[: len(paths)]], spent)
     if len(stamps) < len(listed):
         bound = "budget"
-    if _shallow_digest(shallow, hex_length) != digest:
+    if _read_shallow(shallow, hex_length)[0] != digest:
         raise GitWalkRefusedError(
             "rev-parse",
             "the shallow list changed during the walk",
@@ -238,9 +239,9 @@ def _read_head(git: str, root: Path) -> tuple[int, Path, str | None]:
     return hex_length, root / os.fsdecode(lines[2]), head
 
 
-def _shallow_digest(path: Path, hex_length: int) -> str | None:
-    """The SHA-256 of the shallow list's lines, sorted, each newline-terminated; ``None`` with no
-    list.
+def _read_shallow(path: Path, hex_length: int) -> tuple[str | None, frozenset[str]]:
+    """The SHA-256 of the shallow list's lines, sorted, each newline-terminated, and the OIDs
+    they name; ``None`` and none with no list.
 
     git reads one OID from the head of each line and ignores the rest of it, so any other line
     shape refuses: one line holding two OIDs would digest like two lines and walk unlike them.
@@ -248,7 +249,7 @@ def _shallow_digest(path: Path, hex_length: int) -> str | None:
     try:
         data = path.read_bytes()
     except FileNotFoundError:
-        return None
+        return None, frozenset()
     except OSError as exc:
         raise GitWalkRefusedError("rev-parse", "the shallow file cannot be read", _SHALLOW) from exc
     lines = data.split(b"\n")
@@ -258,18 +259,21 @@ def _shallow_digest(path: Path, hex_length: int) -> str | None:
         raise GitWalkRefusedError(
             "rev-parse", "a shallow-file line is not exactly one object id", _SHALLOW
         )
-    return hashlib.sha256(b"".join(line + b"\n" for line in sorted(lines))).hexdigest()
+    digest = hashlib.sha256(b"".join(line + b"\n" for line in sorted(lines))).hexdigest()
+    return digest, frozenset(line.decode("ascii") for line in lines)
 
 
 def _list_commits(
-    git: str, root: Path, walk_commit: str, hex_length: int
+    git: str, root: Path, walk_commit: str, hex_length: int, shallow: frozenset[str]
 ) -> tuple[list[tuple[str, str | None]], list[int], _Bound]:
     """``(commit, first parent)`` per first-parent commit, the bytes read through each line, and
     the bound that stopped the list; every token on a line is an OID.
 
     Each line is the previous line's first parent, and an unbounded list ends at a commit git
     lists with no parent: a root, or a shallow-list commit (measured: a ``--depth=2`` clone
-    lists its boundary commit alone on its line).
+    lists its boundary commit alone on its line). A list ending at a commit *shallow* names
+    leaves it out: its parent is absent, so diff-tree would read its whole tree as its change
+    (ADR-0040 decision 2).
     """
     listed: list[tuple[str, str | None]] = []
     spent: list[int] = []
@@ -283,9 +287,11 @@ def _list_commits(
             oids = [_oid(token, hex_length, "rev-list") for token in line.split(b" ")]
             if oids[0] != expected:
                 raise _framing("rev-list", "a line is not the walk commit or the last parent")
+            expected = oids[1] if len(oids) > 1 else None
+            if expected is None and oids[0] in shallow:
+                continue
             if len(listed) == DEPTH_BOUND:
                 return listed, spent, "depth"
-            expected = oids[1] if len(oids) > 1 else None
             listed.append((oids[0], expected))
             spent.append(used)
     if expected is not None:
@@ -296,8 +302,9 @@ def _list_commits(
 def _read_paths(
     git: str, root: Path, listed: Sequence[tuple[str, str | None]], spent: Sequence[int]
 ) -> tuple[list[tuple[str, ...] | None], list[int]]:
-    """The paths each commit changed against its first parent, one diff-tree record each, up
-    to the first commit that would cross a budget, and the bytes read through each commit.
+    """The paths each commit changed against its first parent, a root against the empty tree,
+    one diff-tree record each, up to the first commit that would cross a budget, and the bytes
+    read through each commit.
 
     diff-tree drops a stdin commit it cannot read and still exits 0, so the records are
     matched to the feed one for one, in order.
