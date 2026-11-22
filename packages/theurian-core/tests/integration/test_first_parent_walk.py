@@ -660,8 +660,9 @@ def test_a_shallow_path_that_cannot_be_read_refuses(tmp_path: Path) -> None:
     assert _refused(repo).reason == "the shallow file cannot be read"
 
 
+@pytest.mark.parametrize("spawn", ["rev-list", "diff-tree", "log"])
 def test_a_shallow_list_deepened_during_the_walk_refuses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    spawn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     origin = tmp_path / "origin"
     _linear(origin, *[1] * 4)
@@ -669,21 +670,24 @@ def test_a_shallow_list_deepened_during_the_walk_refuses(
     boundary = (repo / ".git" / "shallow").read_text(encoding="utf-8")
     assert walk_first_parent(repo).shallow_digest == _digest(*boundary.split())
     deepen = 'GIT_ALLOW_PROTOCOL=file "$REAL" fetch -q --deepen=1 origin >/dev/null'
-    _shim(tmp_path, monkeypatch, "rev-list", deepen)
+    _shim(tmp_path, monkeypatch, spawn, deepen)
 
     assert _refused(repo).reason == "the shallow list changed during the walk"
     shallow = (repo / ".git" / "shallow").read_text(encoding="utf-8")
     assert shallow != boundary, "the shim did not deepen the clone"
 
 
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
 @pytest.mark.parametrize(("depth", "bound"), [(1, 9), (2, 9), (3, 2), (4, 2)])
 def test_a_shallow_clone_leaves_its_boundary_commit_out_of_the_walk(
-    depth: int, bound: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    depth: int, bound: int, object_format: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The boundary's parent is absent, so its paths were its whole tree and it read like a
     root (#1092 round one, C-M1); one past the depth bound, it is what ends the walk."""
+    monkeypatch.setenv("GIT_DEFAULT_HASH", object_format)
     origin = tmp_path / "origin"
     shas = _linear(origin, *[1] * 5)
+    assert len(shas[0]) == {"sha1": 40, "sha256": 64}[object_format]
     repo = clone(origin, tmp_path / "repo", f"--depth={depth}")
     monkeypatch.setattr(first_parent_walk, "DEPTH_BOUND", bound)
 
@@ -717,19 +721,34 @@ def test_a_chain_ending_at_a_root_keeps_it_while_the_shallow_list_cuts_another_b
     assert ([c.sha for c in walk.commits], walk.shallow_digest) == ([head, root], _digest(*shallow))
 
 
-@pytest.mark.parametrize(("bound", "kept"), [(4, 4), (3, 3)])
+@pytest.mark.parametrize(
+    ("bound", "budget", "walked"),
+    [(4, 9, (4, False, False)), (3, 9, (3, True, False)), (3, 1, (1, False, True))],
+)
 def test_the_depth_bound_stops_the_walk_at_the_same_commit_and_says_so(
-    bound: int, kept: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    bound: int,
+    budget: int,
+    walked: tuple[int, bool, bool],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Where the entry budget cuts inside the depth bound, the flag names the budget (A05)."""
     repo = tmp_path / "repo"
     shas = _linear(repo, *[1] * 4)
     monkeypatch.setattr(first_parent_walk, "DEPTH_BOUND", bound)
+    monkeypatch.setattr(first_parent_walk, "ENTRY_BUDGET", budget)
 
     walk = walk_first_parent(repo)
 
-    assert [commit.sha for commit in walk.commits] == shas[:kept]
-    assert (walk.depth_bounded, walk.budget_bounded) == (kept < len(shas), False)
+    assert [commit.sha for commit in walk.commits] == shas[: walked[0]]
+    assert (len(walk.commits), walk.depth_bounded, walk.budget_bounded) == walked
     assert walk_first_parent(repo) == walk
+
+
+def test_the_shipped_bounds_are_adr_0040_decision_2s() -> None:
+    bounds = ("DEPTH_BOUND", "ENTRY_BUDGET", "BYTE_BUDGET", "PATH_CAP")
+
+    assert [getattr(first_parent_walk, b) for b in bounds] == [10_000, 100_000, 64 << 20, 1_000]
 
 
 @pytest.mark.parametrize(("budget", "kept"), [(6, 3), (5, 2)])
@@ -835,11 +854,20 @@ def test_a_token_outgrowing_the_byte_budget_ends_the_read_and_is_not_read_whole(
     # The background kill ends the writer if neither the early leave nor the deadline can.
     endless = "(sleep 20; kill $$) & while :; do printf %0512d 0; done"
     _shim(tmp_path, monkeypatch, "log", endless)
+    read, taken = first_parent_walk._Child._read, dict.fromkeys(SPAWNS, 0)
+
+    def counted(child: first_parent_walk._Child) -> bytes:
+        chunk = read(child)
+        taken[child._spawn] += len(chunk)
+        return chunk
+
+    monkeypatch.setattr(first_parent_walk._Child, "_read", counted)
     started = time.monotonic()
 
     walk = walk_first_parent(repo)
 
     assert time.monotonic() - started < 3, "the walk left git writing until the timeout"
+    assert taken["log"] <= (1 << 16) + first_parent_walk._CHUNK, taken
     assert walk == FirstParentWalk(sha, (), None, depth_bounded=False, budget_bounded=True)
 
 
