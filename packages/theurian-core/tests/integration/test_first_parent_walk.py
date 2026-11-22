@@ -626,7 +626,7 @@ def test_the_shallow_digest_is_over_lines_and_a_line_holding_two_oids_refuses(
     walk = walk_first_parent(repo)
     shallow.write_text(f"{deep} {near}\n", encoding="utf-8")
 
-    assert ([c.sha for c in walk.commits], walk.shallow_digest) == (shas[:2], _digest(deep, near))
+    assert ([c.sha for c in walk.commits], walk.shallow_digest) == (shas[:1], _digest(deep, near))
     assert _refused(repo).reason == "a shallow-file line is not exactly one object id"
 
 
@@ -668,14 +668,55 @@ def test_a_shallow_list_deepened_during_the_walk_refuses(
     origin = tmp_path / "origin"
     _linear(origin, *[1] * 4)
     repo = clone(origin, tmp_path / "repo", "--depth=2")
-    walk = walk_first_parent(repo)
-    assert (len(walk.commits), walk.shallow_digest) == (2, _digest(walk.commits[1].sha))
+    boundary = (repo / ".git" / "shallow").read_text(encoding="utf-8")
+    assert walk_first_parent(repo).shallow_digest == _digest(*boundary.split())
     deepen = 'GIT_ALLOW_PROTOCOL=file "$REAL" fetch -q --deepen=1 origin >/dev/null'
     _shim(tmp_path, monkeypatch, "rev-list", deepen)
 
     assert _refused(repo).reason == "the shallow list changed during the walk"
     shallow = (repo / ".git" / "shallow").read_text(encoding="utf-8")
-    assert shallow != f"{walk.commits[1].sha}\n", "the shim did not deepen the clone"
+    assert shallow != boundary, "the shim did not deepen the clone"
+
+
+@pytest.mark.parametrize(("depth", "bound"), [(1, 9), (2, 9), (3, 2), (4, 2)])
+def test_a_shallow_clone_leaves_its_boundary_commit_out_of_the_walk(
+    depth: int, bound: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boundary's parent is absent, so its paths were its whole tree and it read like a
+    root (#1092 round one, C-M1); one past the depth bound, it is what ends the walk."""
+    origin = tmp_path / "origin"
+    shas = _linear(origin, *[1] * 5)
+    repo = clone(origin, tmp_path / "repo", f"--depth={depth}")
+    monkeypatch.setattr(first_parent_walk, "DEPTH_BOUND", bound)
+
+    walk = walk_first_parent(repo)
+
+    kept = min(depth - 1, bound)
+    assert (walk.walk_commit, [commit.sha for commit in walk.commits]) == (shas[0], shas[:kept])
+    assert (walk.shallow_digest, walk.depth_bounded, walk.budget_bounded) == (
+        _digest(shas[depth - 1]),
+        depth - 1 > bound,
+        False,
+    )
+
+
+def test_a_chain_ending_at_a_root_keeps_it_while_the_shallow_list_cuts_another_branch(
+    tmp_path: Path,
+) -> None:
+    origin = new_repo(tmp_path / "origin")
+    root = commit_file(origin, "r.txt", "r\n")
+    head = commit_file(origin, "q.txt", "q\n")
+    git(origin, "checkout", "-q", "-b", "side")
+    for n in range(4):
+        commit_file(origin, f"{n}.txt", "s\n")
+    git(origin, "checkout", "-q", "main")
+    repo = clone(origin, tmp_path / "repo", "--depth=3", "--no-single-branch")
+    shallow = (repo / ".git" / "shallow").read_text(encoding="utf-8").split()
+    assert len(shallow) == 1 and shallow[0] not in (head, root), "no other branch is cut"
+
+    walk = walk_first_parent(repo)
+
+    assert ([c.sha for c in walk.commits], walk.shallow_digest) == ([head, root], _digest(*shallow))
 
 
 @pytest.mark.parametrize(("bound", "kept"), [(4, 4), (3, 3)])
