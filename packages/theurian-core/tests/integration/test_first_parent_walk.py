@@ -567,8 +567,6 @@ def test_a_sha256_repository_walks_with_a_nested_path_whole(tmp_path: Path) -> N
 def test_a_stream_read_seven_bytes_at_a_time_walks_alike(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """git flushes each record whole, so at the shipped chunk no token spans two reads (measured
-    on 1,500 commits)."""
     repo = _history(tmp_path / "repo")
     walk = walk_first_parent(repo)
     monkeypatch.setattr(first_parent_walk, "_CHUNK", 7)
