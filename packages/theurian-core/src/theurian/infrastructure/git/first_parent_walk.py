@@ -271,9 +271,9 @@ def _list_commits(
 
     Each line is the previous line's first parent, and an unbounded list ends at a commit git
     lists with no parent: a root, or a shallow-list commit (measured: a ``--depth=2`` clone
-    lists its boundary commit alone on its line). A list ending at a commit *shallow* names
-    leaves it out: its parent is absent, so diff-tree would read its whole tree as its change
-    (ADR-0040 decision 2).
+    lists its boundary commit alone on its line). A chain end *shallow* names is left out, a
+    grafted boundary or a true root, as git lists both alike: the cost is one under-collected
+    commit, never a false edge, and the digest marks the walk shallow (ADR-0040 decision 2).
     """
     listed: list[tuple[str, str | None]] = []
     spent: list[int] = []
