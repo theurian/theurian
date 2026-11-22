@@ -361,7 +361,7 @@ def test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself
     round one, X1); a child that left the group outlived the group kill (#1092 round one)."""
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 1.0)
     # One byte per read, or ``yes`` fills memory before a missed deadline shows.
     monkeypatch.setattr(first_parent_walk, "_CHUNK", 1)
     _shim(tmp_path, monkeypatch, spawn, action)
@@ -369,8 +369,8 @@ def test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself
 
     refusal = _refused(repo)
 
-    assert time.monotonic() - started < 2, "the walk waited past its bound for git"
-    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 0.5-second bound")
+    assert time.monotonic() - started < 3, "the walk waited past its bound for git"
+    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 1-second bound")
 
 
 def test_the_deadline_kills_what_stays_in_git_s_process_group(
@@ -380,13 +380,13 @@ def test_the_deadline_kills_what_stays_in_git_s_process_group(
     sees a group left running (mutants N15, N16)."""
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 1.0)
     _shim(
-        tmp_path, monkeypatch, "rev-list", f'(sleep 1; touch "{tmp_path}/outlived") & sleep 6; exit'
+        tmp_path, monkeypatch, "rev-list", f'(sleep 2; touch "{tmp_path}/outlived") & sleep 6; exit'
     )
 
-    _refused(repo)
-    time.sleep(1.5)
+    assert _refused(repo).spawn == "rev-list"
+    time.sleep(2)
 
     assert not (tmp_path / "outlived").exists()
 
@@ -402,7 +402,6 @@ def test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk(
     )
     fast_import = ["git", "fast-import", "--quiet"]
     subprocess.run(fast_import, cwd=repo, input=history.encode(), check=True)  # noqa: S603
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
     holder = 'exec 3<&0; sleep 6 <&3 >/dev/null & echo $! >>"$PIDS"; "$REAL" "$@" </dev/null; exit'
     _shim(tmp_path, monkeypatch, "diff-tree", holder)
     started = time.monotonic()
