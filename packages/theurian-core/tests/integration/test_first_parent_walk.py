@@ -403,7 +403,7 @@ def test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk(
     fast_import = ["git", "fast-import", "--quiet"]
     subprocess.run(fast_import, cwd=repo, input=history.encode(), check=True)  # noqa: S603
     monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
-    holder = 'sleep 6 <&0 >/dev/null 2>&1 & echo $! >>"$PIDS"; "$REAL" "$@" </dev/null; exit $?'
+    holder = 'exec 3<&0; sleep 6 <&3 >/dev/null & echo $! >>"$PIDS"; "$REAL" "$@" </dev/null; exit'
     _shim(tmp_path, monkeypatch, "diff-tree", holder)
     started = time.monotonic()
 
