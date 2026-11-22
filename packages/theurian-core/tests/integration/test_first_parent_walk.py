@@ -6,13 +6,16 @@ read -- its positive control -- and then shown leaving the walk unchanged.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
 import shutil
+import signal
 import subprocess
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import NoReturn
 
@@ -56,6 +59,16 @@ def _no_developer_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_shim_survivor(tmp_path: Path) -> Iterator[None]:
+    """A shim appends to ``$PIDS`` each descendant the walk may leave running."""
+    yield
+    pids = tmp_path / "pids"
+    for pid in pids.read_text().split() if pids.exists() else ():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(pid), signal.SIGKILL)
 
 
 def _history(repo: Path) -> Path:
@@ -115,11 +128,11 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
-def _refused(root: Path) -> GitWalkRefusedError:
+def _refused(root: Path, runs: str = "'git ") -> GitWalkRefusedError:
     with pytest.raises(GitWalkRefusedError) as caught:
         walk_first_parent(root)
     refusal = caught.value
-    assert "'git " in refusal.remedy, f"the remedy names nothing to run: {refusal.remedy!r}"
+    assert runs in refusal.remedy, f"the remedy names nothing to run: {refusal.remedy!r}"
     text = str(refusal) + refusal.remedy
     assert not [leak for leak in (str(root), ".txt", "caf") if leak in text], text
     return refusal
@@ -275,7 +288,7 @@ def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: s
     assert real is not None
     shim = _write(
         tmp_path / "shim" / "git",
-        f'#!/bin/sh\nREAL="{real}"\n'
+        f'#!/bin/sh\nREAL="{real}"\nPIDS="{tmp_path / "pids"}"\n'
         "for a; do case $a in rev-parse|rev-list|diff-tree|log) break;; esac; done\n"
         f'case $a in {spawn}) {action};; esac\nexec "$REAL" "$@"\n',
     )
@@ -325,22 +338,106 @@ def test_a_stream_the_framing_cannot_read_refuses(
     assert (refusal.spawn, "git --version" in refusal.remedy) == (spawn, True)
 
 
-@pytest.mark.parametrize("spawn", ["rev-parse", "rev-list", "diff-tree", "log"])
+SPAWNS = ("rev-parse", "rev-list", "diff-tree", "log")
+SETSID = "perl -e 'use POSIX; POSIX::setsid(); sleep 6' & echo $! >>\"$PIDS\"; sleep 6; exit"
+LEAVER = "exec perl -e 'use POSIX; setpgid(0, getpgrp(getppid())) or die; close STDOUT; sleep 6'"
+
+
+@pytest.mark.parametrize(
+    ("spawn", "action"),
+    [
+        *[pytest.param(spawn, "sleep 6; exit", id=f"{spawn}-child") for spawn in SPAWNS],
+        *[pytest.param(spawn, SETSID, id=f"{spawn}-setsid-child") for spawn in SPAWNS],
+        pytest.param("rev-list", "perl -e 'sleep 6' & sleep 6; exit", id="rev-list-group-child"),
+        pytest.param("rev-parse", "(sleep 6; kill $$) & exec yes", id="rev-parse-never-empty"),
+        pytest.param("rev-list", "exec >&-; sleep 6; exit", id="rev-list-closed-stdout"),
+        pytest.param("rev-list", LEAVER, id="rev-list-leader-leaves-the-group"),
+    ],
+)
 def test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself(
-    spawn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    spawn: str, action: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The shim is a non-exec wrapper whose sleeping child holds stdout: killing the wrapper
-    alone left the read blocked until that child exited (#1058 round one, X1)."""
+    """Killing a non-exec wrapper alone left the read blocked until its child exited (#1058
+    round one, X1); a child that left the group outlived the group kill (#1092 round one)."""
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 1.0)
-    _shim(tmp_path, monkeypatch, spawn, "sleep 30; exit")
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
+    # One byte per read, or ``yes`` fills memory before a missed deadline shows.
+    monkeypatch.setattr(first_parent_walk, "_CHUNK", 1)
+    _shim(tmp_path, monkeypatch, spawn, action)
     started = time.monotonic()
 
     refusal = _refused(repo)
 
-    assert time.monotonic() - started < 3, "the walk waited past its bound for git"
-    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 1-second bound")
+    assert time.monotonic() - started < 2, "the walk waited past its bound for git"
+    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 0.5-second bound")
+
+
+def test_the_deadline_kills_what_stays_in_git_s_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every wait ends at the deadline whether or not the group dies, so no elapsed assertion
+    sees a group left running (mutants N15, N16)."""
+    repo = new_repo(tmp_path / "repo")
+    commit_file(repo, "a.txt", "a\n")
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
+    _shim(
+        tmp_path, monkeypatch, "rev-list", f'(sleep 1; touch "{tmp_path}/outlived") & sleep 6; exit'
+    )
+
+    _refused(repo)
+    time.sleep(1.5)
+
+    assert not (tmp_path / "outlived").exists()
+
+
+def test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feed larger than a pipe buffer, written into a pipe nobody read, held the walk until
+    the holder exited (#1092 round one, A-H1)."""
+    repo = new_repo(tmp_path / "repo")
+    history = "".join(
+        f"commit refs/heads/main\ncommitter t <t@t> {i} +0000\ndata 0\n" for i in range(2000)
+    )
+    fast_import = ["git", "fast-import", "--quiet"]
+    subprocess.run(fast_import, cwd=repo, input=history.encode(), check=True)  # noqa: S603
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.5)
+    holder = 'sleep 6 <&0 >/dev/null 2>&1 & echo $! >>"$PIDS"; "$REAL" "$@" </dev/null; exit $?'
+    _shim(tmp_path, monkeypatch, "diff-tree", holder)
+    started = time.monotonic()
+
+    refusal = _refused(repo)
+
+    assert time.monotonic() - started < 2, "the walk waited on diff-tree's stdin"
+    assert refusal.spawn == "diff-tree"
+
+
+@pytest.mark.parametrize(
+    ("name", "stand_in"),
+    [
+        pytest.param("tempdir", lambda t: str(t / "absent"), id="no-directory"),
+        pytest.param(
+            "TemporaryFile", lambda t: lambda: _write(t / "ro", "").open("rb"), id="read-only-file"
+        ),
+    ],
+)
+def test_a_feed_that_cannot_be_staged_refuses_at_diff_tree(
+    name: str,
+    stand_in: Callable[[Path], object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = new_repo(tmp_path / "repo")
+    commit_file(repo, "a.txt", "a\n")
+    monkeypatch.setattr(tempfile, name, stand_in(tmp_path))
+
+    refusal = _refused(repo, runs="'python3 -c")
+
+    assert (refusal.spawn, refusal.reason) == (
+        "diff-tree",
+        "the commit list could not be written to a temporary file",
+    )
 
 
 def test_the_walk_spawns_trailer_sources_log_prefix_unchanged_plus_decision_2s_switches(
@@ -696,7 +793,7 @@ def test_a_token_outgrowing_the_byte_budget_ends_the_read_and_is_not_read_whole(
     sha = _linear(repo, 1)[0]
     monkeypatch.setattr(first_parent_walk, "BYTE_BUDGET", 1 << 16)
     monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 10.0)
-    # The background kill ends the writer if neither the early leave nor the timer can.
+    # The background kill ends the writer if neither the early leave nor the deadline can.
     endless = "(sleep 20; kill $$) & while :; do printf %0512d 0; done"
     _shim(tmp_path, monkeypatch, "log", endless)
     started = time.monotonic()
