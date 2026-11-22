@@ -293,6 +293,8 @@ def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: s
         f'case $a in {spawn}) {action};; esac\nexec "$REAL" "$@"\n',
     )
     shim.chmod(0o755)
+    # A fresh script's first exec measured up to 302 ms here, its second 12 ms: pay it unbounded.
+    subprocess.run([shim, "--version"], capture_output=True, check=True)  # noqa: S603
     monkeypatch.setenv("PATH", f"{shim.parent}{os.pathsep}{os.environ['PATH']}")
 
 
