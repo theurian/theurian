@@ -358,3 +358,55 @@ def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
     assert all(str(project.name) in cause for cause in causes)
     for secret in (str(tmp_path), str(tmp_path.resolve()), *causes):
         assert secret not in result.stdout + result.stderr + plain.stdout + plain.stderr
+
+
+def test_an_apply_records_each_ref_once_per_changed_path_at_the_walk_commit(project: Path) -> None:
+    """ADR-0040 decisions 1 and 2 (D1)."""
+    head = _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+
+    result, payload = _apply()
+
+    assert result.exit_code == 0, payload
+    assert (payload["traceability"]["walkCommit"], payload["traceability"]["edges"]) == (head, 1)
+    assert _rows(project, EDGES) == [(head, "code", "a.py", "knowledge", ITEM)]
+
+
+def test_every_apply_replaces_the_edges_and_the_walk_record_in_its_one_transaction(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0040 decision 2 (D2): an apply with nothing pending replaces the set after a rebase,
+    and a failure after the walk record is written rolls back both."""
+    first = _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    assert _apply()[0].exit_code == 0
+    git(project, "commit", "-q", "--amend", "-m", f"amended\n\nRefs: {ITEM}\n")
+    amended = git(project, "rev-parse", "HEAD").strip()
+
+    result, payload = _apply()
+    _fail_after_the_walk_record(monkeypatch)
+    _commit(project, "b.py", f"change b\n\nRefs: {ITEM}\n")
+    failed, refusal = _apply()
+
+    assert amended != first
+    assert (result.exit_code, payload["applied"]) == (0, [])
+    assert (failed.exit_code, refusal["error"]) == (4, "planted")
+    assert _rows(project, EDGES) == [(amended, "code", "a.py", "knowledge", ITEM)]
+    assert _rows(project, "SELECT walk_commit FROM schema_metadata") == [(amended,)]
+
+
+def test_one_head_gives_one_edge_set_and_a_commit_outside_the_set_keeps_the_state_hash(
+    project: Path,
+) -> None:
+    """ADR-0040 decision 2's identity (D3): edges are a function of the walk commit, and no edge
+    field enters ``StateInputs`` (*Still owed* item 1's ``state_hash`` perturbation pin)."""
+    every = "SELECT * FROM traceability_edges ORDER BY edge_id"
+    _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    first = _apply()[1]
+    edges = _rows(project, every)
+    second = _apply()[1]
+    again = _rows(project, every)
+    head = _commit(project, "b.py", f"change b\n\nRefs: {ITEM}\n")
+    third = _apply()[1]
+
+    assert (again, len(edges)) == (edges, 1)
+    assert first["stateHash"] == second["stateHash"] == third["stateHash"]
+    assert (third["traceability"]["walkCommit"], len(_rows(project, every))) == (head, 2)
