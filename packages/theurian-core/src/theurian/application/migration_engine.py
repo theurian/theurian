@@ -70,7 +70,7 @@ from theurian.domain.migration import (
     UpsertRevision,
 )
 from theurian.domain.ports import Clock
-from theurian.domain.specification import Specification
+from theurian.domain.specification import EdgeCollection, Specification
 from theurian.domain.values import AclGroup, ContentHash, TenantId, ValidityPeriod
 
 
@@ -173,6 +173,8 @@ class ApplyReport:
     permissive_moves: list[PermissiveMove] = field(default_factory=list)
     #: In replay order, for ``accept``.
     overwrites: list[Overwrite] = field(default_factory=list)
+    #: Set by ``cli/migration_pipeline.py``'s collector; the engine leaves it ``None``.
+    traceability: EdgeCollection | None = None
 
     @property
     def changed(self) -> bool:

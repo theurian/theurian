@@ -1036,9 +1036,11 @@ def _integrity_signal(
     report ``damageDetected`` on every restricted deployment: a false security
     claim, and a louder one than the count it would have tidied.
 
-    Both use ``!=`` rather than ``<``. The state database is immutable once
-    built, so a healthy project has each pair equal and a difference in *either*
-    direction is damage -- rows lost, or another project's rows bleeding in.
+    Both use ``!=`` rather than ``<``. A later apply into a built state database
+    leaves its knowledge rows and migration history as they were (it replaces
+    the edge set and walk record), so a healthy project has each pair equal and
+    a difference in *either* direction is damage -- rows lost, or another
+    project's rows bleeding in.
 
     ``expected_surfaceable is None`` -- no row for this project in
     `project_integrity` -- is damage too, not "not recorded". Every database this
@@ -2517,9 +2519,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # `appliedMigrations` is the pointer's own `migration_count`, carried
         # from the resolution that chose `database`, not `len(applied_migrations)`
         # read back from the store. On a healthy project the two are equal by
-        # construction (the state database is immutable once built); they diverge
-        # only under damage, and there the pointer's count is the authoritative
-        # one. Reporting the live read instead is precisely the #30 silent
+        # construction (a later apply into a built state database leaves its
+        # migration history as it was and replaces the edge set and walk
+        # record); they diverge only under damage, and there the pointer's count
+        # is the authoritative one. Reporting the live read instead is precisely the #30 silent
         # under-report: a corrupt `migration_history.project_id` dropped every
         # row out of the `WHERE`, so the tool answered `appliedMigrations: 0`
         # against a project that had applied several -- a successful, false

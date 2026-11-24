@@ -30,7 +30,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -59,7 +59,10 @@ from theurian.domain.migration import (
 )
 from theurian.domain.ports import Clock
 from theurian.domain.project import Project
+from theurian.domain.refs_trailer import CommitRefs, capped_digest, edges_from_commit
+from theurian.domain.specification import EdgeCollection, FlaggedCommit, TraceabilityEdge
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
+from theurian.infrastructure.git.first_parent_walk import FirstParentWalk
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
@@ -69,11 +72,15 @@ if TYPE_CHECKING:
     from theurian.domain.migration import LoadedMigrations
 
 #: The branch a rehearsal's throwaway project row records. Nothing the replay
-#: does reads it -- the engine writes knowledge rows, not repository metadata --
-#: and a copy in a temporary directory is not a Git working tree to ask, so
-#: asking would spend a subprocess on an answer with no reader. ``Project``
-#: refuses an empty one.
+#: reads it, and its copy in a temporary directory is not a Git working tree to
+#: ask: with ``TMPDIR`` inside a clone, git run there discovers that clone and
+#: reads its history (ADR-0040 decision 2, measured). So no replay asks git
+#: anything -- each passes ``walk=None``, recording a null walk and no edges, and
+#: none derives a root from ``project.root_path``. ``Project`` refuses an empty
+#: branch.
 _REHEARSAL_BRANCH = "main"
+
+_NO_WALK = FirstParentWalk(None, (), None, depth_bounded=False, budget_bounded=False)
 
 
 def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a real apply and a replay, all keyword-only
@@ -85,6 +92,7 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
     clock: Clock,
     database_created: bool,
     already_locked: bool = False,
+    walk: FirstParentWalk | None = None,
 ) -> ApplyReport:
     """Apply ``loaded`` into ``database``, inside one write transaction.
 
@@ -109,6 +117,11 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
     this function never sees. :func:`rehearse_migration_set` below passes
     neither -- it takes the default, against a throwaway lock file no other
     process can contend for.
+
+    ``walk`` is the first-parent walk ``migrate apply`` ran before taking the
+    lock (NFR-8), or ``None`` at a replay. Either way the transaction replaces the
+    whole edge set and the walk record on every call, nothing pending included
+    (ADR-0040 decision 2), and the report carries what it recorded.
 
     Raises:
         MigrationChecksumMismatchError: If an applied migration's file changed.
@@ -151,13 +164,14 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
             #
             # **Not on every apply, and the condition is the honest half.**
             # `migrate apply` is step one of the remedy those tools publish. An
-            # apply with nothing pending writes nothing, so re-recording there
-            # would take the count *from the damaged state* and clear the signal
-            # while the damage stands -- the remedy would manufacture the
-            # all-clear it was run to earn. Recording only when this apply
-            # created the database or applied a migration leaves the signal up
-            # until the remedy's second step (delete `.theurian/state/`, apply
-            # again) rebuilds the database, which is the step that actually
+            # apply with nothing pending leaves the knowledge rows as they were --
+            # the edge set and walk record below are replaced on every apply -- so
+            # re-recording there would take the count *from the damaged state*
+            # and clear the signal while the damage stands -- the remedy would
+            # manufacture the all-clear it was run to earn. Recording only when
+            # this apply created the database or applied a migration leaves the
+            # signal up until the remedy's second step (delete `.theurian/state/`,
+            # apply again) rebuilds the database, which is the step that actually
             # cures it.
             #
             # `database_created` is what keeps the other direction sound: a
@@ -172,7 +186,57 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
             # record what it can read. Curing it needs an expectation that does
             # not live in the file it describes.
             writer.record_expected_surfaceable_count(project.project_id)
-    return report
+        collected = _collect_edges(writer, project.project_id, walk or _NO_WALK)
+    return replace(report, traceability=collected)
+
+
+def _collect_edges(
+    writer: SqliteWriter, project_id: ProjectId, walk: FirstParentWalk
+) -> EdgeCollection:
+    """Replace the stored edges and walk record with ``walk``'s, in the caller's transaction.
+
+    CPU and SQLite only: the walk ran before the lock. ``WalkedCommit.message``
+    reaches :func:`edges_from_commit` and nothing else.
+
+    Conflict policy (#1073 R1 L-5). An edge id is content-derived and embeds its
+    commit's sha (``edge_id_for``), so two edges share one only within one commit,
+    where they are the same edge and are kept once. It omits the project id, and a
+    state database can hold more than one project (a project-id change registers a
+    second row), so the replace is whole-table: the edge set, like the walk record,
+    is the walk of the last apply to commit in this checkout.
+    """
+    walked: list[CommitRefs] = []
+
+    def edges() -> Iterator[TraceabilityEdge]:
+        for commit in walk.commits:
+            refs = edges_from_commit(
+                project_id=project_id,
+                sha=commit.sha,
+                committed_at=commit.committed_at,
+                paths=commit.paths,
+                message=commit.message,
+            )
+            walked.append(replace(refs, edges=()))
+            yield from {edge.edge_id: edge for edge in refs.edges}.values()
+
+    count = writer.replace_traceability_edges(edges())
+    capped = capped_digest(refs.sha for refs in walked if refs.capped)
+    depth: bool | None = None
+    budget: bool | None = None
+    if walk.walk_commit is not None:
+        depth, budget = walk.depth_bounded, walk.budget_bounded
+    writer.record_walk(walk.walk_commit, walk.shallow_digest, depth, budget, capped)
+    absent = writer.count_edges_naming_no_item(project_id)
+    reported = (
+        FlaggedCommit(r.sha, r.refused, r.capped, r.undecodable, r.undated, absent.get(r.sha, 0))
+        for r in walked
+    )
+    flagged = tuple(
+        c for c in reported if c.refused or c.capped or c.undecodable or c.undated or c.absent_items
+    )
+    return EdgeCollection(
+        walk.walk_commit, count, walk.shallow_digest, depth, budget, capped, flagged
+    )
 
 
 def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) -> Replay:
@@ -216,6 +280,7 @@ def rehearse_migration_set(candidate: CandidateMigrationSet, *, clock: Clock) ->
             loaded=loaded,
             clock=clock,
             database_created=True,
+            walk=None,
         )
         return Replay(
             _read_items(database, candidate.project_id),
@@ -275,6 +340,7 @@ def current_item_in(
                 loaded=loaded,
                 clock=clock,
                 database_created=True,
+                walk=None,
             )
             items = _read_items(database, project_id)
     except (TheurianError, OSError) as exc:
@@ -333,6 +399,7 @@ def permissive_moves_in(
                 loaded=loaded,
                 clock=clock,
                 database_created=True,
+                walk=None,
             )
     except (TheurianError, OSError, sqlite3.Error) as exc:
         return MoveReport(None, _their_words(exc))
