@@ -226,3 +226,28 @@ a seam-side one. Burned in from PR #596, where the same family was caught
 four times across seams before the predicate moved into the cures
 (`review_evidence/cures.py` is the worked example; the reflected walk in
 `test_review_evidence_cures.py` is the tripwire).
+
+## A spawn timeout is a deadline, not a wait for EOF
+
+**A timeout on a child process is one monotonic deadline over every wait on it
+but the final reap, never a wait for pipe EOF or for a writer to drain.** A
+child (a wrapper `git` is the measured case) whose descendant holds stdout
+keeps EOF away; one whose descendant holds stdin unread blocks a writer thread
+once the feed outgrows the pipe buffer, and that writer cannot be joined — each
+for as long as the descendant lives. Spawn the child as its own group leader
+(`process_group=0`; without it `killpg` raises `ProcessLookupError`, which a
+suppressing caller turns into a kill that does nothing). At the deadline, while
+the leader is unreaped, kill its group, then the child, and refuse at once.
+Stage a stdin known in full before the spawn in an unlinked `TemporaryFile`. A
+descendant that leaves the group (`setsid`, `setpgid`) is left running; the
+deadline bounds the caller's wait, not its life ("A descendant that left the
+group is left running" — the walk module docstring). Burned in from #1058 round
+one (X1: 45.3 s against a 30 s bound) and #1092 round one (4.3 s against 1 s at
+`9488a8b4`; setsid on stdout 6.3 s; in-group stdin holder 6.41 s), the same
+family twice on this specialist's code. `_Child` and `_stdin` in
+`infrastructure/git/first_parent_walk.py` are the worked example, `__exit__`'s
+`wait()` the recorded exception (#1092 round two, security LOW-2). Tripwires in
+`test_first_parent_walk.py`:
+`test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself`,
+`test_the_deadline_kills_what_stays_in_git_s_process_group`,
+`test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk`.
