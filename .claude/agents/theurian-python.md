@@ -226,3 +226,23 @@ a seam-side one. Burned in from PR #596, where the same family was caught
 four times across seams before the predicate moved into the cures
 (`review_evidence/cures.py` is the worked example; the reflected walk in
 `test_review_evidence_cures.py` is the tripwire).
+
+## A spawn timeout is a deadline, not a wait for EOF
+
+**A timeout on a child process is one monotonic deadline that bounds every wait
+on it, never a wait for pipe EOF** — a wrapper `git` whose descendant holds
+stdout or stdin keeps EOF away past any timeout. At the deadline kill the
+process group, then the child, and refuse at once. Feed a child's stdin from a
+file (an unlinked `TemporaryFile`), not a writer thread: a thread's `join`
+blocks behind a descendant that holds the pipe. A descendant that called
+`setsid` escapes the group kill and is left running; the deadline bounds the
+walk's wait, not that descendant's life ("A descendant that left the group is
+left running" — the walk module docstring). Burned in from #1058 round one (X1:
+4.3 s against a 1 s bound) and #1092 round one (setsid descendant on stdout, 6.3
+s; in-group descendant on diff-tree's stdin, 6.41 s), where the same family was
+caught twice on this specialist's code; `_Child` and `_stdin` in
+`infrastructure/git/first_parent_walk.py` are the worked example, and
+`test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself`,
+`test_the_deadline_kills_what_stays_in_git_s_process_group` and
+`test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk` in
+`test_first_parent_walk.py` are the tripwires.
