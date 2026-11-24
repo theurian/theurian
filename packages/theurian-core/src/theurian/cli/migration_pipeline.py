@@ -193,17 +193,17 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
 def _collect_edges(
     writer: SqliteWriter, project_id: ProjectId, walk: FirstParentWalk
 ) -> EdgeCollection:
-    """Replace the project's edges and walk record with ``walk``'s, in the caller's transaction.
+    """Replace the stored edges and walk record with ``walk``'s, in the caller's transaction.
 
     CPU and SQLite only: the walk ran before the lock. ``WalkedCommit.message``
     reaches :func:`edges_from_commit` and nothing else.
 
     Conflict policy (#1073 R1 L-5). An edge id is content-derived and embeds its
     commit's sha (``edge_id_for``), so two edges share one only within one commit,
-    where they are the same edge and are kept once. ``edge_id`` is a global primary
-    key, but a state database holds one project: it lives under that project's own
-    ``.theurian/state/`` (``ProjectPaths.database_for``), and ``register_project``
-    has one call site under ``src``, :func:`apply_migration_set`, once per apply.
+    where they are the same edge and are kept once. It omits the project id, and a
+    state database can hold more than one project (a project-id change registers a
+    second row), so the replace is whole-table: the edge set, like the walk record,
+    is the latest walk of this checkout.
     """
     walked: list[CommitRefs] = []
 
@@ -219,7 +219,7 @@ def _collect_edges(
             walked.append(replace(refs, edges=()))
             yield from {edge.edge_id: edge for edge in refs.edges}.values()
 
-    count = writer.replace_traceability_edges(project_id, edges())
+    count = writer.replace_traceability_edges(edges())
     capped = capped_digest(refs.sha for refs in walked if refs.capped)
     depth: bool | None = None
     budget: bool | None = None

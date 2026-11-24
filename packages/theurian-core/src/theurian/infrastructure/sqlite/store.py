@@ -1468,17 +1468,13 @@ class SqliteWriter:
     def add_traceability_edge(self, edge: TraceabilityEdge) -> None:
         self._conn.execute(_EDGE_INSERT, _edge_parameters(edge))
 
-    def replace_traceability_edges(
-        self, project_id: ProjectId, edges: Iterable[TraceabilityEdge]
-    ) -> int:
-        """Replace the project's edge set with ``edges``, consumed as it is read; the rows inserted.
+    def replace_traceability_edges(self, edges: Iterable[TraceabilityEdge]) -> int:
+        """Replace the whole edge table with ``edges``, consumed as it is read; the rows inserted.
 
         One ``executemany`` over the iterable: at ADR-0040's budget the set is 3,200,000 rows,
         so it is never built as a list here.
         """
-        self._conn.execute(
-            "DELETE FROM traceability_edges WHERE project_id = ?", (project_id.value,)
-        )
+        self._conn.execute("DELETE FROM traceability_edges")
         return self._conn.executemany(_EDGE_INSERT, map(_edge_parameters, edges)).rowcount
 
     def record_walk(
