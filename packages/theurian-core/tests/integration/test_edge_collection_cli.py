@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -183,7 +184,7 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
     lock = project / ".theurian/runtime/write.lock"
     spawns: list[tuple[str, bool]] = []
     at_replace: list[bool] = []
-    spawn, replace = subprocess.Popen.__init__, SqliteWriter.replace_traceability_edges
+    spawn, write = subprocess.Popen.__init__, SqliteWriter.replace_traceability_edges
 
     def spied_spawn(self: Any, args: Sequence[str], *rest: Any, **options: Any) -> None:
         spawns.append((_subcommand(args), _held(lock)))
@@ -191,7 +192,7 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
 
     def spied_replace(self: SqliteWriter, *args: Any) -> int:
         at_replace.append(_held(lock))
-        return replace(self, *args)
+        return write(self, *args)
 
     monkeypatch.setattr(subprocess.Popen, "__init__", spied_spawn)
     monkeypatch.setattr(SqliteWriter, "replace_traceability_edges", spied_replace)
@@ -410,3 +411,40 @@ def test_one_head_gives_one_edge_set_and_a_commit_outside_the_set_keeps_the_stat
     assert (again, len(edges)) == (edges, 1)
     assert first["stateHash"] == second["stateHash"] == third["stateHash"]
     assert (third["traceability"]["walkCommit"], len(_rows(project, every))) == (head, 2)
+
+
+def test_the_apply_report_publishes_exactly_these_keys(project: Path) -> None:
+    """D5c: a key in ``migrate apply --json`` is a published field, decided here before it ships."""
+    _commit(project, "a.py", f"change a\n\nRefs: {NEVER}\n")
+
+    result, payload = _apply()
+
+    assert result.exit_code == 0, payload
+    assert sorted(payload) == [
+        *("applied", "changed", "databaseCreated", "indexPurge", "operationsApplied"),
+        *("permissiveMoves", "skipped", "stateHash", "traceability"),
+    ]
+    assert sorted(payload["traceability"]) == [
+        *("budgetBounded", "cappedDigest", "commits", "depthBounded", "edges", "shallowDigest"),
+        "walkCommit",
+    ]
+    assert [sorted(row) for row in payload["traceability"]["commits"]] == [
+        ["absentItems", "capped", "refused", "sha", "undated", "undecodable"]
+    ]
+
+
+def test_a_path_listed_twice_in_one_commit_gives_one_edge(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D9: two equal edge ids in one commit would abort the user's apply on the primary key."""
+    head = _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    walked = walking.walk_first_parent(project)
+    doubled = replace(walked.commits[0], paths=("a.py", "a.py"))
+    monkeypatch.setattr(
+        commands, "walk_first_parent", lambda _: replace(walked, commits=(doubled,))
+    )
+
+    result, payload = _apply()
+
+    assert result.exit_code == 0, payload
+    assert _rows(project, EDGES) == [(head, "code", "a.py", "knowledge", ITEM)]
