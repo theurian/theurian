@@ -826,10 +826,17 @@ gate decides (row 9).
 >    content-derived and embeds its commit's sha, so, short of a collision in
 >    SHA-256's first 128 bits, two edges share one only within one commit, where
 >    they are the same edge and are kept once; a doubled path does not abort the
->    apply on the key. `edge_id` is a global primary key, but a state database
->    holds one project: it lives under that project's own `.theurian/state/`
->    (`ProjectPaths.database_for`), and `register_project` has one call site
->    under `src`, `apply_migration_set`, once per apply.
+>    apply on the key. The id omits the project id, and a state database can
+>    hold more than one project: the state hash excludes the project id and
+>    `register_project` upserts by id, so after a checkout's project id changes,
+>    its next apply of an unchanged state writes a second `projects` row into
+>    that state's database. The replace therefore deletes the whole table, not
+>    the applying project's rows, since deleting only those failed the second
+>    project's insert on `edge_id`'s primary key (C-H1, HIGH, in
+>    [#1097](https://github.com/theurian/theurian/pull/1097)'s round-one code
+>    review); the rows it inserts carry the applying project's id. The edge set
+>    is the latest walk of this checkout, as the walk record in
+>    `schema_metadata` is.
 > 5. **The edge id and its evidence** ("An edge's id and `created_at` derive
 >    from its commit"). The id is the first 128 bits of
 >    SHA-256(sha ‖ 0x00 ‖ path ‖ 0x00 ‖ item id) over UTF-8, Crockford-base32

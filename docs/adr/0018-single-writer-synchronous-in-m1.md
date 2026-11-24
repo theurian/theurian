@@ -268,8 +268,8 @@ each call site cannot.
   > claim, and point 2's no-op, hold for the knowledge rows: a second apply of the
   > same set applies no migration. They do not hold for the database. Since
   > [#1097](https://github.com/theurian/theurian/pull/1097) every `migrate apply`,
-  > the loser of point 2's race included, replaces the project's traceability
-  > edges and walk record from a first-parent walk it ran before taking the lock
+  > the loser of point 2's race included, replaces the traceability edges and
+  > walk record from a first-parent walk it ran before taking the lock
   > (ADR-0040 decision 2). Both tests hold that the second apply applies nothing
   > and reports `changed` false, and the engine's that the writer holds one
   > revision; neither reads the edges.
