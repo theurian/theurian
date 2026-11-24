@@ -229,20 +229,25 @@ four times across seams before the predicate moved into the cures
 
 ## A spawn timeout is a deadline, not a wait for EOF
 
-**A timeout on a child process is one monotonic deadline that bounds every wait
-on it, never a wait for pipe EOF** — a wrapper `git` whose descendant holds
-stdout or stdin keeps EOF away past any timeout. At the deadline kill the
-process group, then the child, and refuse at once. Feed a child's stdin from a
-file (an unlinked `TemporaryFile`), not a writer thread: a thread's `join`
-blocks behind a descendant that holds the pipe. A descendant that called
-`setsid` escapes the group kill and is left running; the deadline bounds the
-walk's wait, not that descendant's life ("A descendant that left the group is
-left running" — the walk module docstring). Burned in from #1058 round one (X1:
-4.3 s against a 1 s bound) and #1092 round one (setsid descendant on stdout, 6.3
-s; in-group descendant on diff-tree's stdin, 6.41 s), where the same family was
-caught twice on this specialist's code; `_Child` and `_stdin` in
-`infrastructure/git/first_parent_walk.py` are the worked example, and
+**A timeout on a child process is one monotonic deadline over every wait on it
+but the final reap, never a wait for pipe EOF or for a writer to drain.** A
+child (a wrapper `git` is the measured case) whose descendant holds stdout
+keeps EOF away; one whose descendant holds stdin unread blocks a writer thread
+once the feed outgrows the pipe buffer, and that writer cannot be joined — each
+for as long as the descendant lives. Spawn the child as its own group leader
+(`process_group=0`; without it `killpg` raises `ProcessLookupError`, which a
+suppressing caller turns into a kill that does nothing). At the deadline, while
+the leader is unreaped, kill its group, then the child, and refuse at once.
+Stage a stdin known in full before the spawn in an unlinked `TemporaryFile`. A
+descendant that leaves the group (`setsid`, `setpgid`) is left running; the
+deadline bounds the caller's wait, not its life ("A descendant that left the
+group is left running" — the walk module docstring). Burned in from #1058 round
+one (X1: 45.3 s against a 30 s bound) and #1092 round one (4.3 s against 1 s at
+`9488a8b4`; setsid on stdout 6.3 s; in-group stdin holder 6.41 s), the same
+family twice on this specialist's code. `_Child` and `_stdin` in
+`infrastructure/git/first_parent_walk.py` are the worked example, `__exit__`'s
+`wait()` the recorded exception (#1092 round two, security LOW-2). Tripwires in
+`test_first_parent_walk.py`:
 `test_a_spawn_outliving_the_timeout_refuses_within_the_bound_and_names_itself`,
-`test_the_deadline_kills_what_stays_in_git_s_process_group` and
-`test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk` in
-`test_first_parent_walk.py` are the tripwires.
+`test_the_deadline_kills_what_stays_in_git_s_process_group`,
+`test_a_descendant_holding_diff_tree_s_stdin_does_not_hold_the_walk`.
