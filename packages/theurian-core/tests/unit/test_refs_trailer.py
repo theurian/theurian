@@ -375,3 +375,29 @@ def test_the_capped_digest_keeps_duplicates() -> None:
 
     assert capped_digest([_SHA, _SHA]) == expected
     assert capped_digest([_SHA, _SHA]) != capped_digest([_SHA])
+
+
+def test_the_collector_answers_as_it_did_when_the_engine_version_was_last_set() -> None:
+    """D11, ruling c2-4 section 2's ratchet, in ``PARSER_STAMP``'s shape: answers, not source."""
+    spaces = sorted({*string.whitespace, *filter(str.isspace, map(chr, range(0x3001)))})
+    paths = ("a.py", "署名付きトークンを持つ.md")
+    answers = [
+        refs_trailer.REFS_KEY,
+        MAX_REFS_PER_COMMIT,
+        [
+            _refs(probe).edges != ()
+            for probe in ("Refs: a.b", "Refs:a.b", "refs: a.b", "Refs:\ta.b")
+        ],
+        [
+            c
+            for c in spaces
+            if [e.target.node_id for e in _refs(f"Refs: {c}a.b{c}").edges] == ["a.b"]
+        ],
+        [_refs(_ids(count)).capped for count in (32, 33)],
+        [edge.edge_id.value for edge in _refs("Refs: a.b", paths=paths).edges],
+        capped_digest([_OTHER_SHA, _SHA, _SHA]),
+    ]
+
+    assert hashlib.sha256(repr(answers).encode()).hexdigest() == (
+        "5a04fdf3040cc620ad75b2a7be04be1b39462b0b1113eec60e156239f2b92c5c"
+    ), "the collector's rules moved: bump MIGRATION_ENGINE_VERSION (ADR-0040 decision 2)"
