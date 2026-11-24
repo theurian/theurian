@@ -1366,6 +1366,27 @@ Still owed, with the milestone that will satisfy it:
   > Measured on macOS only, at `true`, `false` and unset; pinned at `true` alone (the
   > override makes the setting moot) by
   > `test_fix_commit_check_adapter.py::test_a_stored_path_byte_identical_to_an_nfd_tree_path_verifies_under_precompose` and its `-k normalization` cases.
+
+  > **Amended 2026-11-20 ([#1033](https://github.com/theurian/theurian/issues/1033),
+  > [PR #1058](https://github.com/theurian/theurian/pull/1058), squash `983c27ca`):
+  > `PROCESS_SPAWN_SITES` holds seven sites, and the universal the round-1 block states
+  > is unchanged.** That block's "pins six spawn sites" and "the other five spawns" were
+  > true when written. `983c27ca` added
+  > `("infrastructure/git/first_parent_walk.py", "subprocess")`, ADR-0040 decision 2's
+  > first-parent walk, so the set holds seven (key:
+  > `uv run python -c "import runpy; print(len(runpy.run_path('packages/theurian-core/tests/unit/test_network_call_sites.py')['PROCESS_SPAWN_SITES']))"`)
+  > and the other spawns are six: the five that block describes, and the walk.
+  > `fix_commit_check.py` is still the one composed into the surface a caller's bytes
+  > reach, and `mcp/tools.py` still its only importer under `mcp/`/`daemon/`. The walk
+  > receives no MCP-caller bytes, for two reasons. Its argv holds none: beside the git
+  > binary resolved from `PATH`, its variable tokens are object ids git itself printed,
+  > each refused unless it is lowercase hex of the repository's hash length, and `log`'s
+  > `--max-count` integer; `diff-tree`'s stdin is `rev-list`'s object ids, validated the
+  > same way; and the repository root it is called with is the working directory, not an
+  > argv token. And no module under `src/` imports it, so none under `mcp/` or `daemon/`
+  > does:
+  > `git grep -n -e 'git\.first_parent_walk' -e 'git import first_parent_walk' -- packages/theurian-core/src`
+  > prints nothing on this date. The round-1 block is left intact as its record.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a
