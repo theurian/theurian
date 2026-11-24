@@ -33,7 +33,7 @@ at `5ad30799`.** Source paths are relative to
 move — or *standing* — an invariant this record rests on, so a change that moves
 it must move this record too. Line cites outside *Context* were re-measured in
 #1033's schema-v5 pull request ([#1059](https://github.com/theurian/theurian/pull/1059));
-*Context*'s are as measured at `5ad30799`.
+*Context*'s are as measured at `5ad30799`. Those outside it were re-measured again on 2026-11-24, against #1033's collection pull request ([#1097](https://github.com/theurian/theurian/pull/1097)).
 
 **Records this decision moves.** Decision 3 narrows ADR-0038 decision 2, which
 required a spec id named by an edge source to be resolved to its item id when
@@ -270,14 +270,14 @@ apply` already runs (`apply_migration_set`, `cli/migration_pipeline.py`) — aft
 the migration set applies. It resolves `HEAD` once to the walk commit's OID — a
 second read of `HEAD` can name another commit — reads from that OID alone each
 first-parent commit's `Refs:` trailers (decision 3) and the paths it changed
-against its first parent, and writes the edges into `traceability_edges`.
+against its first parent, and writes the edges into `traceability_edges`. *Amended 2026-11-24: the walk runs before the write lock, outside it ("Amended 2026-11-24", after decision 9).*
 
 **Every `migrate apply` collects, including one with nothing pending,** and
 replaces the whole edge set, the recorded walk commit and the boundary inside its
 write transaction. It is a full replace, not an incremental walk from the stored
 commit: after a rebase or a reset, the stored commit is not an ancestor of
 `HEAD`. The expected-count record keeps its condition
-(`cli/migration_pipeline.py:146`), because edges are not that record.
+(`cli/migration_pipeline.py:159`), because edges are not that record.
 
 **The walk commit is recorded, not hashed.** It is §6 principle 2's "commit it
 was measured against", recorded in `schema_metadata` (decision 4) and published
@@ -352,7 +352,7 @@ held below or recorded outside the claim:
   subprocess timeout (`infrastructure/git/trailer_source.py:95`), and a stream
   the framing cannot read refuse the build. None of them degrades to "no
   edges", because then one identity would name two edge sets. `current_commit`
-  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:89-102`),
+  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:96-108`),
   so the collector reads `HEAD` through a call that tells the two apart.
 
 **What git emits to the walk is bounded by recorded constants:** at most 10,000
@@ -383,13 +383,13 @@ prints 0). In a merge workflow a side-branch commit's trailer is collected only
 when the merge commit's message carries it (*Negative*).
 
 **The collector never discovers a repository.** `apply_migration_set` takes the
-root the composition root resolved (`find_git_root`, `cli/context.py:61`,
-`:257`) or None. None collects nothing and records the walk commit and the
+root the composition root resolved (`find_git_root`, `cli/context.py:62`,
+`:279`) or None. None collects nothing and records the walk commit and the
 boundary as null, as an unborn `HEAD` does; a trace then reports a null commit
 and zero edges walked. With a root, every read names it (`--git-dir`), or the
 collector refuses unless `rev-parse --show-toplevel` equals it. The rehearsal
 passes None: with `TMPDIR` inside a clone, its throwaway copy discovered that
-clone and read its history (measured), so `cli/migration_pipeline.py:71-75`'s
+clone and read its history (measured), so `cli/migration_pipeline.py:74-80`'s
 comment is #1033's to restate.
 
 **On a shallow clone, the walk stops at the shallow boundary.** The shallow
@@ -483,6 +483,25 @@ edges would depend on a command nothing else requires.
   source to be resolved to its item id at population: for this source, the
   trailer names the item id itself.
 
+> **Amended 2026-11-24, for #1033's collection as
+> [#1097](https://github.com/theurian/theurian/pull/1097) built it.**
+>
+> - **The strip set** ("surrounding ASCII whitespace") is `string.whitespace`:
+>   space, tab, LF, CR, VT and FF. Git's own `isspace` excludes VT and FF.
+> - **An undated commit**, whose committer date `datetime` cannot hold, yields
+>   no edges, is reported by its sha as `undated`, and does not join the capped
+>   digest for being undated: containment, ADR-0029 D3's class. The flags are
+>   independent facts, so an undated commit that is also path-capped joins the
+>   digest by the path-cap rule.
+> - **3(b)'s count** is `absentItems`, per commit: its recorded edges whose item
+>   endpoint names no `knowledge_items` row, counted inside the apply's
+>   transaction against the state it built. A withheld item has a row, so it is
+>   not absent. The report carries counts and flags by sha, never an id, and
+>   lists a commit only when one is set. One walk over a corpus withholding an
+>   item and over one that never held it gives one edge set and one report but
+>   that count, 1 against 2, in
+>   `test_a_withheld_item_and_one_never_held_differ_only_in_the_absent_item_count`.
+
 ### 4. The schema: `source_commit`, and `SCHEMA_VERSION` 4 → 5
 
 `traceability_edges` gains `source_commit TEXT NOT NULL` — every edge is
@@ -526,13 +545,13 @@ relation row of the project the apply leaves — whatever operation wrote it,
 in the same set therefore cures an earlier cycle, and no applied document, which
 is frozen, ever needs editing. A refusal rolls the transaction back.
 Ids the alias map connects, through any chain, are one node, since `list_relations` resolves an
-alias first (`store.py:927-941`), so a rename whose `supersededBy` names its successor is refused.
+alias first (`store.py:935-949`), so a rename whose `supersededBy` names its successor is refused.
 
 **The refusal is a new `RelationCycleError`, a `MigrationError`, not
 `MigrationCycleError`.** That one means a `dependsOn` cycle among migrations, so
 "no application order exists" (`domain/errors.py:116-122`); it carries migration
 ids, and the CLI's remedy for it is "Break the dependency cycle shown above, then
-retry." (`cli/commands.py:767-768`). A relation cycle's cure is a new migration
+retry." (`cli/commands.py:769-770`). A relation cycle's cure is a new migration
 with a `removeRelation`, so the new error names the relation type and the
 cycle's item ids, and its remedy says that. The guard is in the engine, so the
 error reaches every CLI site that replays a set: the first key below prints
@@ -614,8 +633,8 @@ built by an enforcing Core.** A state a non-enforcing Core built is v4: the
 enforcing Core refuses it at open (`_assert_schema_version`,
 `infrastructure/sqlite/connection.py:1083-1089`) and names another database for
 the project, since `SCHEMA_VERSION` is a state-hash input
-(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:273`,
-`cli/migration_pipeline.py:209`, `:362`), which only the enforcing apply builds.
+(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:295`,
+`cli/migration_pipeline.py:273`, `:429`), which only the enforcing apply builds.
 
 ### 6. The per-hop visibility gate
 
@@ -704,7 +723,7 @@ gated; it reaches only what its edges reach through the gate.
 ### 8. Governed parameters, and `TraceNodeType` joins ADR-0039's sets
 
 `knowledge.trace`'s edge-type, direction and node-type parameters are typed `str`
-in the handler and parsed by `_closed_value` (`mcp/tools.py:1253`), never
+in the handler and parsed by `_closed_value` (`mcp/tools.py:1255`), never
 annotated with a `Literal` or an enum. An annotation reaches the input schema
 the SDK serves for the tool, the form
 [#856](https://github.com/theurian/theurian/issues/856) records ADR-0039's
@@ -756,6 +775,136 @@ gate decides (row 9).
 | 8 | State, lifecycle and concurrency | A v4 database under a v5 Core; a trace racing a rebuild, or an apply replacing the edges in place (decision 2) | Exact match at open (decision 4); one read session per request, and the active pointer read once, so a trace sees one state whole | A two-way open test; a trace racing either sees the old state or the new one, never both |
 | 9 | A closed-set value decoded before the gate (#853's class) | A `TraceNodeType` or `RelationType` member a Core lacks, decoded before the hop's gate decides | `traceability_edges` rows are identical in A and B (3(b)), so their decode cannot differ; an item row or a `knowledge_relations` row naming W is the face #853 records, held by its per-database check, due before the first new member (ADR-0039) | A withheld row carrying an unknown member against an absent id: identical responses, the acceptance ADR-0039 *Compliance* item 3 states |
 
+### Amended 2026-11-24 — decision 2 as #1033's collection built it
+
+> **Amended 2026-11-24, for #1033's collection as
+> [#1097](https://github.com/theurian/theurian/pull/1097) built it, on the walk
+> [#1092](https://github.com/theurian/theurian/pull/1092) bounded (`70c6cfad`).**
+> Each item names the sentence of decision 2 it amends, which stays where it is.
+>
+> 1. **The walk runs before the write lock, outside it** ("Collection runs
+>    inside the state build — the write transaction"). Git subprocesses inside
+>    the transaction would break NFR-8, "No external I/O (LLM, network,
+>    subprocess) inside a write transaction"
+>    ([`requirements-analysis.md`](../architecture/requirements-analysis.md)),
+>    which `migrate apply` already keeps for its other git reads
+>    (`cli/commands.py:2621-2628`). It walks once (`cli/commands.py:2639-2647`):
+>    the walk resolves `HEAD` to the walk commit's OID, and the edges are a pure
+>    function of that OID, which is what is recorded, so a `HEAD` that moves
+>    during the walk desynchronises nothing. `apply_migration_set` takes that
+>    walk, not a root ("The collector never discovers a repository"); the three
+>    replays pass `walk=None` and record a null walk and no edges, as the comment
+>    decision 2 left to #1033 now says. Inside the one transaction the apply
+>    derives the edges, replaces the edge set, writes the walk record and the
+>    boundary, and takes 3(b)'s count. A refusing walk exits 4 with its own
+>    remedy before the lock is taken, and nothing is written. Measured in #1097:
+>    10 git spawns before the lock and none under it. Rejected: amending NFR-8
+>    to admit the walk, which would add its duration, up to each of its four
+>    spawns' 30-second deadline, to the lock hold. The `watchdog` agent's ruling
+>    of 2026-11-20; not a Blocking Issue, since every apply still collects.
+> 2. **What the lock still holds is the replace.** Measured through the adapter
+>    in #1097 ([its description](https://github.com/theurian/theurian/pull/1097),
+>    *Write-lock hold*): 7.4 ms at 5 edges, 1.006 s at 50,000, and 12.99 s for a
+>    320,000-edge replace, about 24.6k rows/s; about 130 s at the 3,200,000
+>    budget is a linear extrapolation, not a measurement. Only the walk's read,
+>    at most 0.68 s at the budget (*Negative*, third item), left the lock:
+>    *Negative*'s "near two minutes" was always the replace.
+>    `WRITE_LOCK_TIMEOUT_SECONDS` is 30.0 (`infrastructure/sqlite/connection.py:59`),
+>    so above about 740k edges a concurrent writer — a findings build, a review
+>    ingest, a second apply — fails with `WriteLockTimeoutError`, whose remedy is
+>    to wait and retry. NFR-8 is cited, not amended: its subprocess clause is
+>    met, and its < 50 ms target is not met at scale, bounded by the edge budget
+>    ([#1038](https://github.com/theurian/theurian/issues/1038)). Recorded as a
+>    cost by the `watchdog` agent's ruling of 2026-11-24.
+> 3. **Edges are derived state** ("The walk commit is recorded, not hashed").
+>    The edge set and the walk record are a function of the walk commit, the
+>    boundary and the collector's rules, replaced whole by every apply, and no
+>    migration writes them; `state_hash` names the canonical state alone.
+>    NFR-5, NFR-6 and ADR-0007 carry the same amendment. The `watchdog` agent's
+>    ruling of 2026-11-04.
+> 4. **One edge per `edge_id`** ("replaces the whole edge set"). An edge id is
+>    content-derived and embeds its commit's sha, so, short of a collision in
+>    SHA-256's first 128 bits, two edges share one only within one commit, where
+>    they are the same edge and are kept once; a doubled path does not abort the
+>    apply on the key. `edge_id` is a global primary key, but a state database
+>    holds one project: it lives under that project's own `.theurian/state/`
+>    (`ProjectPaths.database_for`), and `register_project` has one call site
+>    under `src`, `apply_migration_set`, once per apply.
+> 5. **The edge id and its evidence** ("An edge's id and `created_at` derive
+>    from its commit"). The id is the first 128 bits of
+>    SHA-256(sha ‖ 0x00 ‖ path ‖ 0x00 ‖ item id) over UTF-8, Crockford-base32
+>    encoded to 26 characters with no bit cleared: 26 characters carry 130 bits,
+>    so a 128-bit value leads with 0–7 and is a valid ULID. The separator is
+>    unambiguous: git forbids 0x00 in a path, a sha is hex and an item id holds
+>    none. `Ulid`'s "lexical order equals creation order"
+>    (`domain/identifiers.py:70-71`) does not hold for these content-addressed
+>    ids; `ORDER BY edge_id` is a total order and nothing more. The evidence is
+>    `provider="git"` and `source_uri="<sha>:<path>"`, git's own `<rev>:<path>`
+>    syntax, which reads no remote (`domain/refs_trailer.py`).
+> 6. **The diff-tree feed** ("`C P1`, or `C` for a root or shallow-boundary
+>    commit"). A commit the shallow list names is not fed to diff-tree: it is
+>    left out of the walk (item 7). `C` alone is fed for a root the list does not
+>    name.
+> 7. **A shallow-listed chain end** ("A commit the list names yields no edges:
+>    its parent is absent, so its `C` record diffs it against the empty tree").
+>    The outcome holds by another mechanism, and the premise is false for a true
+>    root, which git writes into the list when a clone's depth equals the
+>    history's length. A chain end the list names is left out of the walk, a
+>    grafted boundary or a true root alike, since rev-list prints the two alike:
+>    the cost is one under-collected commit, never a false edge, and the shallow
+>    digest marks the walk shallow (`_list_commits`,
+>    `infrastructure/git/first_parent_walk.py:266-277`). #1092's code review
+>    graded the root's loss HIGH, converted to this recorded decision because
+>    telling the two apart needs the raw commit object, another spawn. The
+>    depth-2 measurement there stays the reason a boundary's own diff is not
+>    collected.
+> 8. **Lazy fetch** ("#1016 does not reach a walk that #1012's environment
+>    keeps from fetching"). That overstates it below git 2.45, where
+>    `GIT_NO_LAZY_FETCH` is not read and only `GIT_ALLOW_PROTOCOL=""` holds the
+>    line (#1092, *Notes for review*).
+> 9. **Each spawn's timeout is one deadline** ("a walk that fails or outlives
+>    the 30-second subprocess timeout"). Since `70c6cfad`, `GIT_TIMEOUT_SECONDS`
+>    (30.0, `infrastructure/git/trailer_source.py:95`) is one monotonic deadline
+>    over the waits on a spawn's output and exit status — a `selectors` wait
+>    before each read and a bounded wait for the status, never a wait for pipe
+>    EOF; at it the walk kills git's process group, then git, and refuses at
+>    once. diff-tree's feed is staged in an unlinked `TemporaryFile`, so no
+>    writer thread waits on git. A descendant that calls `setsid` or `setpgid`
+>    escapes the group kill and is left running; the walk still refuses at the
+>    deadline. Measured on #1092: group and `setsid` probes for all four spawns
+>    refused in 1.0–1.2 s against a 1 s bound, and a descendant holding
+>    diff-tree's stdin in 0.23 s (0.25 s under dash). The deadline's exactness
+>    is unpinned: two mutants that loosen it survive (#1092, *Deferred
+>    claims*). The walk's waits outside every deadline, its read of the shallow
+>    file among them, are listed on #1092 (*Notes for review*).
+> 10. **A loose ref `HEAD` names, holding bytes that are not an OID, reads as
+>     unborn** ("reads `HEAD` through a call that tells the two apart").
+>     `rev-parse --verify --quiet HEAD` exits 1 with no line for either, so
+>     such a repository records a null walk and no edges rather than refusing
+>     (`infrastructure/git/first_parent_walk.py:209-211`). It is #1012's
+>     direct-write residual, outside the claim as the object store is.
+> 11. **No feed, no stdin.** rev-parse, rev-list and log take no feed and get
+>     `subprocess.DEVNULL` as stdin, not `migrate apply`'s, which is the
+>     caller's (`_stdin`, `infrastructure/git/first_parent_walk.py:503-507`).
+>     Nothing pins it: the mutant that drops it survives (#1092's round-two
+>     adversarial LOW-2).
+> 12. **The ratchet** ("a change to them, the bounds and caps below among them,
+>     bumps it"). `test_the_collector_answers_as_it_did_when_the_engine_version_was_last_set`
+>     (`packages/theurian-core/tests/unit/test_refs_trailer.py`) compares a
+>     SHA-256 over the collector's answers with a recorded value and, when they
+>     differ, says to bump `MIGRATION_ENGINE_VERSION`. The answers: `REFS_KEY`;
+>     the cap; which of four `Refs` spellings yields an edge; which whitespace
+>     characters below U+3001 are stripped from both ends of a value; whether 32
+>     and 33 ids are capped; the edge ids for an ASCII and a CJK path; and a
+>     capped digest over a list holding a duplicate. It reads none of the walk's
+>     bounds or its path cap: `test_the_shipped_bounds_are_adr_0040_decision_2s`
+>     pins those four values and names no engine version. #1033 does not bump
+>     the version: no released Core carried a collector, so no database a
+>     released engine built holds edges under other rules, and the next
+>     release's `SCHEMA_VERSION` 5 rebuilds every upgrader's state anyway (the
+>     `watchdog` agent's ruling of 2026-11-20). The rule binds every later
+>     change to the collector.
+
 ## Consequences
 
 ### Positive
@@ -790,6 +939,17 @@ gate decides (row 9).
   at_budget_read.py`, `python3 -I at_budget_write.py <schema.py> v5`, #1036's
   round record). A commit larger than what remains of the budget stops every
   walk there until 10,000 newer first-parent commits pass it.
+
+  > **Re-measured 2026-11-24 through the adapter, in
+  > [#1097](https://github.com/theurian/theurian/pull/1097)** (its description,
+  > *Write-lock hold*): 320,000 edges written fresh in 7.17 s (44,624 rows/s)
+  > and as a replace in 12.99 s (24,629 rows/s), the absent-item count in
+  > 0.21 s, in a 208 MB database. At the 3,200,000 budget the replace is about
+  > 130 s by linear extrapolation, against 116.6 s above; the budget itself
+  > was not re-run. The walk now runs before the write lock and the replace
+  > inside it, so the replace is the lock hold: above about 740k edges a
+  > concurrent writer passes `WRITE_LOCK_TIMEOUT_SECONDS`, 30 s (decision 2's
+  > amendment, item 2).
 - **The budget bounds git's output; git's reads to produce it are bounded only
   by each spawn's 30-second timeout,** which refuses the build and names the
   spawn that timed out, so the operator sees what to act on. Commit content
@@ -804,6 +964,11 @@ gate decides (row 9).
   whether a walk near the timeout succeeds varies with the machine's load.
   Metering git's reads, a commit object-size cap and a tree-size cap on changed
   paths, is filed under #1038; `rev-list`'s own read stays outside any such meter.
+
+  > **Amended 2026-11-24.** Since
+  > [#1092](https://github.com/theurian/theurian/pull/1092) (`70c6cfad`) that
+  > bound holds against a wrapper git whose descendant keeps git's output
+  > open (decision 2's amendment, item 9).
 - **A rename breaks the path link.** An edge names the path its commit changed;
   the module at its new path has no edge until a later commit with a trailer
   changes it.
@@ -824,6 +989,12 @@ gate decides (row 9).
   `packages/theurian-core/tests/integration/test_canonical_store_corruption.py`
   excludes `traceability_edges`, and only it, from its every-table-holds-a-row
   check (ADR-0038, *Neutral*); the slice that populates it owns the change.
+
+  > **Moved 2026-11-24, in
+  > [#1097](https://github.com/theurian/theurian/pull/1097).** The set is
+  > empty: the corruption corpus holds an edge row, and
+  > `test_every_table_the_schema_declares_holds_a_row_to_corrupt` finds a
+  > row in every declared table.
 - **ADR-0038's revision pin stays unrepresented.** An edge does not carry the
   pin the fold drops, which ADR-0038 left to this record: it carries a commit,
   and ADR-0038 records why a commit is not that pin.
@@ -869,12 +1040,12 @@ Landing with this pull request:
   match, F7's two item-id endpoints, the label's lack of cross-item
   uniqueness, and the state hash's reading no Git stand; the rest are dated,
   and only F10's has a fact side. Its failure message names #1033, as the
-  census units' below do; none names #1034. Since #1033 the pin also holds five
+  census units' below do; none names #1034. Since #1033 the pin also holds nine
   sentences outside *Context* as standing: decision 4's `SCHEMA_VERSION` 5,
   `schema_metadata` walk columns and `source_commit TEXT NOT NULL`, decision
-  5's guard in the migration engine, and the edge adapter's landing below.
-  Decision 2's identity and digests and 3(c)'s cap have no fact side until
-  #1033 builds them. Its reach is stated in its module docstring.
+  5's guard in the migration engine, the edge adapter's landing below,
+  decision 2's identity sentence and shallow digest, and 3(c)'s cap and
+  capped digest. Its reach is stated in its module docstring.
 
 Rests on enforcement that already holds:
 
@@ -918,6 +1089,76 @@ calls yet.
   `test_an_incoherent_walk_record_is_refused_by_its_own_check`, eight
   incoherent `schema_metadata` updates, each refused with SQLite naming the
   CHECK the case expects.
+
+Landed from item 1 below in #1033's walk-bounds pull request
+([#1092](https://github.com/theurian/theurian/pull/1092), `70c6cfad`), as
+walk-level tests in
+`packages/theurian-core/tests/integration/test_first_parent_walk.py`; what the
+collector records from each is still owed below:
+
+- **the `fetch --deepen` between the two digest reads**:
+  `test_a_shallow_list_deepened_during_the_walk_refuses`, a depth-2 clone that
+  a shim deepens during rev-list, diff-tree or log, refused with "the shallow
+  list changed during the walk";
+- **a shallow clone and its boundary commit**:
+  `test_a_shallow_clone_leaves_its_boundary_commit_out_of_the_walk`, clones at
+  depths 1 to 5 under sha1 and sha256 whose listed commit is left out and
+  digested, and
+  `test_a_chain_ending_at_a_root_keeps_it_while_the_shallow_list_cuts_another_branch`;
+- **the depth bound and both budgets**, each monkeypatched small:
+  `test_the_depth_bound_stops_the_walk_at_the_same_commit_and_says_so`,
+  `test_the_entry_budget_counts_a_capped_commit_and_stops_at_the_commit_crossing_it`,
+  `test_the_byte_budget_stops_every_stream_at_the_commit_that_would_cross_it`
+  and `test_a_token_outgrowing_the_byte_budget_ends_the_read_and_is_not_read_whole`;
+- **the path cap at the cap and one over it**:
+  `test_a_commit_listing_more_paths_than_the_cap_lists_none`, a three-path
+  commit under a cap monkeypatched to 3 and to 2; the shipped 1,000 and the
+  other three bounds are `test_the_shipped_bounds_are_adr_0040_decision_2s`.
+
+Landed from item 1 below in #1033's collection pull request
+([#1097](https://github.com/theurian/theurian/pull/1097)), in
+`packages/theurian-core/tests/integration/test_edge_collection_cli.py` unless
+another file is named. The collector writes through
+`SqliteWriter.replace_traceability_edges`, `record_walk` and
+`count_edges_naming_no_item`, none of them a port method, so the paragraph
+above still holds for the port's two methods, by the key
+`test_the_traceability_edge_methods_are_referenced_by_the_collector_and_tests_alone`
+(`packages/theurian-core/tests/unit/test_adr_0038_populations.py`) states.
+
+- **the collector and its build report**:
+  `test_an_apply_records_each_ref_once_per_changed_path_at_the_walk_commit`,
+  and `test_the_apply_report_publishes_exactly_these_keys`, the whole `--json`
+  key set;
+- **determinism at one `HEAD`, and the `state_hash` perturbation pin**:
+  `test_one_head_gives_one_edge_set_and_a_commit_outside_the_set_keeps_the_state_hash`,
+  two applies at one `HEAD` reading the same rows, and a commit touching no
+  migration leaving `stateHash` equal;
+- **the full replace after a rebase**:
+  `test_every_apply_replaces_the_edges_and_the_walk_record_in_its_one_transaction`,
+  where after `commit --amend` an apply with nothing pending leaves only the
+  amended commit's edge and walk commit, and a failure planted after the walk
+  record rolls both back;
+- **the no-echo test**: `test_no_refused_value_and_no_message_byte_leaves_the_walk`,
+  seven refused values and a non-UTF-8 message, with five byte strings drawn
+  from them absent from three applies' stdout and stderr, the edge rows, a
+  planted failure's exception chain and the state files; it reads no log;
+- **NFR-8**: `test_no_git_process_starts_while_the_write_lock_is_held`, a flock
+  probe of the lock file at every git spawn of one apply, held at the replace
+  and at no spawn;
+- **each refusal's own remedy, with no state written**:
+  `test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state`, nine plants
+  over eight remedies;
+- **a doubled path's one edge**: `test_a_path_listed_twice_in_one_commit_gives_one_edge`;
+- **3(b)'s count over two corpora, the collector's rules against the engine
+  version, `UNPOPULATED_TABLES`, and *Negative*'s third item re-measured
+  through its adapter**: their amendments in decision 3, decision 2 (item 12),
+  *Neutral* and *Negative*.
+
+Item 1 still owes #1033, after #1092 and #1097: the `TMPDIR`-inside-a-clone
+rehearsal pin; no Git history, an unborn `HEAD`, the depth and budget flags,
+and 3(c)'s cap and capped digest at 32 and 33 ids, each as the collector
+records it; the CHANGELOG; and rows 2, 3, 5, 7 and 21 to 25 of #1033's
+*Sentences this slice falsifies*.
 
 Still owed, with the issue or slice that will satisfy it:
 
