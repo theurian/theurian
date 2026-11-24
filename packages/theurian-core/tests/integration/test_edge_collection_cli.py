@@ -30,6 +30,7 @@ pytestmark = pytest.mark.integration
 runner = CliRunner()
 
 ITEM: Final = "architecture.auth-policy"
+NEVER: Final = "architecture.never-held"
 EDGES: Final = (
     "SELECT source_commit, source_type, source_id, target_type, target_id "
     "FROM traceability_edges ORDER BY 1, 3, 5"
@@ -39,15 +40,21 @@ _DATED: Final = {"GIT_AUTHOR_DATE": "1700000000 +0000", "GIT_COMMITTER_DATE": "1
 
 
 def _project(
-    base: Path, monkeypatch: pytest.MonkeyPatch, *, sensitivity: str | None = None
+    base: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    sensitivity: str | None = None,
+    item: bool = True,
 ) -> Path:
-    """An initialised project whose migration creates :data:`ITEM`, uncommitted."""
+    """An initialised project; its migration, uncommitted, creates :data:`ITEM` if ``item``."""
     root = new_repo(base / "demo")
     monkeypatch.setenv("HOME", str(base))
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(base / "data"))
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(base))
     monkeypatch.chdir(root)
     assert runner.invoke(app, ["init", "--json"]).exit_code == 0
+    if not item:
+        return root
     (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(BODY)
     (root / f".theurian/migrations/{ROOT_MIGRATION_ID}-auth.yaml").write_text(
         root_migration(
@@ -146,3 +153,36 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
     assert at_replace == [True]
     assert [name for name, held in spawns if held] == [], spawns
     assert {"rev-parse", "rev-list", "diff-tree", "log"} <= {n for n, held in spawns if not held}
+
+
+def test_a_withheld_item_and_one_never_held_differ_only_in_the_absent_item_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0040 3(b) (D10): one walk over two corpora, :data:`ITEM` withheld in one and never held
+    in the other, gives one edge set and one report but the absent-item count, which is a count.
+
+    The migrations stay uncommitted, so the two repositories hold one commit byte for byte and
+    the rows, edge ids included, compare whole.
+    """
+    seen = []
+    for name, item in (("withheld", True), ("never-held", False)):
+        root = _project(tmp_path / name, monkeypatch, sensitivity="confidential", item=item)
+        head = _commit(root, "a.py", f"change a\n\nRefs: {ITEM}\nRefs: {NEVER}\n")
+        result, payload = _apply("--allow-uncommitted")
+        assert result.exit_code == 0, payload
+        rows = _rows(root, "SELECT * FROM traceability_edges ORDER BY edge_id")
+        seen.append((head, payload["traceability"], rows, result.stdout))
+    (head, withheld, rows, out), (other_head, never, other_rows, other_out) = seen
+
+    assert (head, len(rows)) == (other_head, 2)
+    assert rows == other_rows
+    assert [[row.pop("absentItems") for row in t["commits"]] for t in (withheld, never)] == [
+        [1],
+        [2],
+    ]
+    assert withheld == never
+    assert withheld["commits"] == [
+        {"sha": head, "refused": 0, "capped": False, "undecodable": False, "undated": False}
+    ]
+    assert ITEM not in out + other_out
+    assert NEVER not in out + other_out
