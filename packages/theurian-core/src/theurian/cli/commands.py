@@ -90,7 +90,7 @@ from theurian.domain.identifiers import MigrationId, ProjectId
 from theurian.domain.migration import MIGRATION_ENGINE_VERSION, MigrationSet
 from theurian.domain.ports import SourceParser
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY, Project
-from theurian.domain.specification import EdgeCollection
+from theurian.domain.specification import EdgeCollection, FlaggedCommit
 from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
 from theurian.infrastructure.embedding import HashingEmbedding
@@ -2869,7 +2869,7 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
             "changed": report.changed,
             "indexPurge": _purge_fields(purge),
             "permissiveMoves": permissive_move_rows(report.permissive_moves, as_json=as_json),
-            "traceability": _traceability_fields(report.traceability),
+            "traceability": _traceability_fields(report.traceability, as_json=as_json),
         },
         as_json=as_json,
     )
@@ -2973,7 +2973,9 @@ def _purge_fields(purge: WithdrawalPurge) -> dict[str, object]:
     }
 
 
-def _traceability_fields(collection: EdgeCollection | None) -> dict[str, object] | None:
+def _traceability_fields(
+    collection: EdgeCollection | None, *, as_json: bool
+) -> dict[str, object] | None:
     """The edge walk this apply recorded, for its payload: shas, counts and flags, no values.
 
     Only commits with a count or a flag are listed: every walked commit would put up to
@@ -2988,18 +2990,25 @@ def _traceability_fields(collection: EdgeCollection | None) -> dict[str, object]
         "depthBounded": collection.depth_bounded,
         "budgetBounded": collection.budget_bounded,
         "cappedDigest": collection.capped_digest,
-        "commits": [
-            {
-                "sha": commit.sha,
-                "refused": commit.refused,
-                "capped": commit.capped,
-                "undecodable": commit.undecodable,
-                "undated": commit.undated,
-                "absentItems": commit.absent_items,
-            }
-            for commit in collection.commits
-        ],
+        "commits": [_traceability_commit(commit, as_json=as_json) for commit in collection.commits],
     }
+
+
+def _traceability_commit(commit: FlaggedCommit, *, as_json: bool) -> dict[str, object] | str:
+    """One flagged commit: the ``--json`` object, or ``sha`` plus its non-zero counts and flags."""
+    fields: dict[str, object] = {
+        "refused": commit.refused,
+        "capped": commit.capped,
+        "undecodable": commit.undecodable,
+        "undated": commit.undated,
+        "absentItems": commit.absent_items,
+    }
+    if as_json:
+        return {"sha": commit.sha, **fields}
+    parts = [
+        name if value is True else f"{name}={value}" for name, value in fields.items() if value
+    ]
+    return " ".join([commit.sha, *parts])
 
 
 daemon_app = typer.Typer(help="Manage the local Theurian daemon.", no_args_is_help=True)
