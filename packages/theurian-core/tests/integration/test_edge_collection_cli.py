@@ -35,6 +35,17 @@ EDGES: Final = (
     "SELECT source_commit, source_type, source_id, target_type, target_id "
     "FROM traceability_edges ORDER BY 1, 3, 5"
 )
+_MARK: Final = "echo-marker-7f3"
+#: C2-3's refused shapes (``test_refs_trailer.py``'s ``_HOSTILE``), as one commit's trailers.
+_REFUSED: Final = (
+    "ADR-0040",
+    "#1033",
+    f"{_MARK}, c.d",
+    f"{_MARK}\xa0",
+    f"{_MARK}x" + "a" * 190,
+    _MARK.upper(),
+    "z" * 201,
+)
 #: Commits are dated so two repositories given the same history hold the same shas.
 _DATED: Final = {"GIT_AUTHOR_DATE": "1700000000 +0000", "GIT_COMMITTER_DATE": "1700000000 +0000"}
 
@@ -82,6 +93,40 @@ def _commit(root: Path, path: str, message: str) -> str:
     git(root, "add", path)
     git(root, "commit", "-q", "-m", message, extra_env=_DATED)
     return git(root, "rev-parse", "HEAD").strip()
+
+
+def _commit_raw(root: Path, path: str, message: bytes) -> str:
+    """A commit holding ``message`` undecoded, which ``git commit`` would re-encode."""
+    (root / path).write_bytes(message)
+    git(root, "add", path)
+    tree, parent = git(root, "write-tree").strip(), git(root, "rev-parse", "HEAD").strip()
+    signature = "T <t@example.com> 1700000000 +0000"
+    header = f"tree {tree}\nparent {parent}\nauthor {signature}\ncommitter {signature}\n\n"
+    staged = root.parent / "commit-object"
+    staged.write_bytes(header.encode() + message)
+    sha = git(root, "hash-object", "-t", "commit", "-w", str(staged)).strip()
+    git(root, "update-ref", "HEAD", sha)
+    return sha
+
+
+def _chain(error: BaseException | None) -> str:
+    """Each exception's ``str`` and ``repr`` down ``__cause__`` and ``__context__``."""
+    parts: list[str] = []
+    while error is not None:
+        parts += [str(error), repr(error)]
+        error = error.__cause__ or error.__context__
+    return "".join(parts)
+
+
+def _fail_after_the_walk_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raise inside the apply's transaction once the edges and the walk record are written."""
+    record = SqliteWriter.record_walk
+
+    def failing(self: SqliteWriter, *args: Any) -> None:
+        record(self, *args)
+        raise sqlite3.OperationalError("planted")
+
+    monkeypatch.setattr(SqliteWriter, "record_walk", failing)
 
 
 def _apply(*flags: str) -> tuple[Result, dict[str, Any]]:
@@ -186,3 +231,49 @@ def test_a_withheld_item_and_one_never_held_differ_only_in_the_absent_item_count
     ]
     assert ITEM not in out + other_out
     assert NEVER not in out + other_out
+
+
+def test_no_refused_value_and_no_message_byte_leaves_the_walk(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C2-3's deferred no-echo claim on the wired path (D5) and ruling c2-2b's message rule (D5b):
+    a refused value costs a count, and a message is read for its trailers and for nothing else.
+    The third apply fails after the collector has read every message, so an exception does reach
+    the caller and its chain is walked.
+    """
+    text = _commit(
+        project,
+        "a.py",
+        f"hostile\n\nbody {_MARK}\n" + "".join(f"Refs: {v}\n" for v in (*_REFUSED, ITEM)),
+    )
+    raw = _commit_raw(project, "b.py", f"raw\n\nbody {_MARK}\nRefs: ".encode() + b"\x80\n")
+
+    result, payload = _apply()
+    plain = runner.invoke(app, ["migrate", "apply"])
+    stored = b"".join(
+        p.read_bytes() for p in (project / ".theurian/state").iterdir() if p.is_file()
+    )
+    _fail_after_the_walk_record(monkeypatch)
+    failed, refusal = _apply()
+
+    assert result.exit_code == plain.exit_code == 0, payload
+    assert (failed.exit_code, refusal["error"]) == (4, "planted")
+    assert "planted" in _chain(failed.exception), "positive control: the chain walk reaches it"
+    flags = {"capped": False, "undated": False, "absentItems": 0}
+    assert payload["traceability"]["commits"] == [
+        {"sha": raw, "refused": 0, "undecodable": True, **flags},
+        {"sha": text, "refused": len(_REFUSED), "undecodable": False, **flags},
+    ]
+    assert _rows(project, EDGES) == [(text, "code", "a.py", "knowledge", ITEM)]
+    assert text.encode() in stored, "positive control: the byte search reads the edge rows"
+    published = b"".join(
+        [
+            *(run.stdout_bytes + run.stderr_bytes for run in (result, plain, failed)),
+            repr(_rows(project, "SELECT * FROM traceability_edges")).encode(),
+            _chain(failed.exception).encode(),
+        ]
+    ).lower()
+    for value in (b"adr-0040", b"#1033", _MARK.encode(), b"z" * 20, b"\x80"):
+        assert value not in published, value
+    assert _MARK.encode() not in stored.lower()
+    assert b"z" * 20 not in stored
