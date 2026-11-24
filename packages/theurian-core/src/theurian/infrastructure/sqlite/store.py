@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 from datetime import datetime
@@ -1466,24 +1466,55 @@ class SqliteWriter:
     # -- Traceability -----------------------------------------------------
 
     def add_traceability_edge(self, edge: TraceabilityEdge) -> None:
+        self._conn.execute(_EDGE_INSERT, _edge_parameters(edge))
+
+    def replace_traceability_edges(
+        self, project_id: ProjectId, edges: Iterable[TraceabilityEdge]
+    ) -> int:
+        """Replace the project's edge set with ``edges``, consumed as it is read; the rows inserted.
+
+        One ``executemany`` over the iterable: at ADR-0040's budget the set is 3,200,000 rows,
+        so it is never built as a list here.
+        """
         self._conn.execute(
-            "INSERT INTO traceability_edges (edge_id, project_id, source_type, source_id, "
-            "relation_type, target_type, target_id, evidence, confidence, created_at, "
-            "source_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                edge.edge_id.value,
-                edge.project_id.value,
-                edge.source.node_type.value,
-                edge.source.node_id,
-                edge.relation_type.value,
-                edge.target.node_type.value,
-                edge.target.node_id,
-                json.dumps([asdict(anchor) for anchor in edge.evidence]),
-                edge.confidence,
-                edge.created_at.isoformat(),
-                edge.source_commit,
-            ),
+            "DELETE FROM traceability_edges WHERE project_id = ?", (project_id.value,)
         )
+        return self._conn.executemany(_EDGE_INSERT, map(_edge_parameters, edges)).rowcount
+
+    def record_walk(
+        self,
+        walk_commit: str | None,
+        shallow_digest: str | None,
+        depth_bounded: bool | None,
+        budget_bounded: bool | None,
+        capped_digest: str | None,
+    ) -> None:
+        """The edge walk's commit and boundary; ``schema_metadata``'s CHECKs are the contract.
+
+        Without a walk commit, every other argument is null.
+        """
+        self._conn.execute(
+            "UPDATE schema_metadata SET walk_commit = ?, walk_shallow_digest = ?, "
+            "walk_depth_bounded = ?, walk_budget_bounded = ?, walk_capped_digest = ? WHERE id = 1",
+            (walk_commit, shallow_digest, depth_bounded, budget_bounded, capped_digest),
+        )
+
+    def count_edges_naming_no_item(self, project_id: ProjectId) -> Mapping[str, int]:
+        """Per source commit, the edges whose knowledge endpoint names no item (ADR-0040 3(b)).
+
+        Counted against this transaction's own rows; a commit with none is absent.
+        """
+        with _reading():
+            rows = self._conn.execute(
+                "SELECT edge.source_commit AS sha, COUNT(*) AS absent "
+                "FROM traceability_edges AS edge "
+                "WHERE edge.project_id = ? AND edge.target_type = ? AND NOT EXISTS ("
+                "  SELECT 1 FROM knowledge_items AS item "
+                "  WHERE item.project_id = edge.project_id AND item.item_id = edge.target_id"
+                ") GROUP BY edge.source_commit",
+                (project_id.value, TraceNodeType.KNOWLEDGE.value),
+            ).fetchall()
+            return {row["sha"]: int(row["absent"]) for row in rows}
 
     # -- Specifications ---------------------------------------------------
 
@@ -1873,6 +1904,29 @@ def _relation_from_row(row: sqlite3.Row) -> KnowledgeRelation:
         target_item_id=ItemId(row["target_item_id"]),
         created_at=_dt(row["created_at"]),
         note=row["note"],
+    )
+
+
+_EDGE_INSERT: Final = (
+    "INSERT INTO traceability_edges (edge_id, project_id, source_type, source_id, "
+    "relation_type, target_type, target_id, evidence, confidence, created_at, "
+    "source_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+
+def _edge_parameters(edge: TraceabilityEdge) -> tuple[str | float, ...]:
+    return (
+        edge.edge_id.value,
+        edge.project_id.value,
+        edge.source.node_type.value,
+        edge.source.node_id,
+        edge.relation_type.value,
+        edge.target.node_type.value,
+        edge.target.node_id,
+        json.dumps([asdict(anchor) for anchor in edge.evidence]),
+        edge.confidence,
+        edge.created_at.isoformat(),
+        edge.source_commit,
     )
 
 
