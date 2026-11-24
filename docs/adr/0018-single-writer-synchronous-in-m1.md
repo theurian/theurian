@@ -35,7 +35,7 @@ Milestone 1. Only its enforcement mechanism changes.**
    it -- and guarding the state databases under `.theurian/state/`. Two
    concurrent `theurian migrate apply` invocations serialise: the loser waits
    for the lock, then finds the other's migrations already applied and becomes
-   a no-op (idempotence, FR-K8).
+   a no-op (idempotence, FR-K8). *(Amended 2026-11-24 under Compliance: it still replaces the traceability edges.)*
 3. Milestone 3 replaces the lock with an in-process asyncio queue owned by the
    daemon, plus the same file lock for any CLI invocation running alongside it.
    **`transaction()` keeps its signature**, so no application code changes.
@@ -262,6 +262,17 @@ each call site cannot.
 - `tests/unit/test_migration_engine.py::test_reapplying_the_same_set_is_a_no_op`
   and `tests/integration/test_cli_commands.py::test_apply_is_idempotent` — a
   second application of the same migration set changes nothing.
+
+  > **Amended 2026-11-24, by [ADR-0040](0040-traceability-representation-and-edge-sources.md)
+  > ([#1033](https://github.com/theurian/theurian/issues/1033)).** This bullet's
+  > claim, and point 2's no-op, hold for the knowledge rows: a second apply of the
+  > same set applies no migration. They do not hold for the database. Since
+  > [#1097](https://github.com/theurian/theurian/pull/1097) every `migrate apply`,
+  > the loser of point 2's race included, replaces the project's traceability
+  > edges and walk record from a first-parent walk it ran before taking the lock
+  > (ADR-0040 decision 2). Both tests hold that the second apply applies nothing
+  > and reports `changed` false, and the engine's that the writer holds one
+  > revision; neither reads the edges.
 
 Still owed, with the issue or milestone that will satisfy it:
 

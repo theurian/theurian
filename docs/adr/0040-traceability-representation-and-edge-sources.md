@@ -1157,7 +1157,7 @@ above still holds for the port's two methods, by the key
 Item 1 still owes #1033, after #1092 and #1097: the `TMPDIR`-inside-a-clone
 rehearsal pin; no Git history, an unborn `HEAD`, the depth and budget flags,
 and 3(c)'s cap and capped digest at 32 and 33 ids, each as the collector
-records it; the CHANGELOG; and rows 2, 3, 5, 7 and 21 to 25 of #1033's
+records it; the CHANGELOG; and rows 21 to 25 of #1033's
 *Sentences this slice falsifies*.
 
 Still owed, with the issue or slice that will satisfy it:

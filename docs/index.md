@@ -248,9 +248,9 @@ but also:
 
 **That graph is not built.** `system.capabilities` reports
 `traceability: false`, there is no `knowledge.trace` or `knowledge.impact` tool,
-and the `traceability_edges` table ships empty. Collecting the graph and
-querying it is Phase C of the adopted roadmap; impact analysis and drift
-detection are Phase E.
+and nothing reads the `traceability_edges` table, which `theurian migrate apply`
+fills from `Refs:` commit trailers. Collecting the graph and querying it is
+Phase C of the adopted roadmap, whose collecting has landed; impact analysis and drift detection are Phase E.
 
 Nothing on this page describes **as shipped** a capability that does not exist
 today. Where

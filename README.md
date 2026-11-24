@@ -214,9 +214,9 @@ files or enforce how an agent follows either source.
 Specification traceability — requirement → spec → ADR → PR → review → code →
 test → evidence, as a queryable graph — is the design this is built toward and
 **is not built**. `system.capabilities` reports `traceability: false`, no
-`knowledge.trace` or `knowledge.impact` tool exists, and the
-`traceability_edges` table ships empty. It is [Phase C](docs/roadmap.md) of the
-adopted roadmap.
+`knowledge.trace` or `knowledge.impact` tool exists, and nothing reads the
+`traceability_edges` table, which `theurian migrate apply` fills from `Refs:`
+commit trailers since #1033. It is [Phase C](docs/roadmap.md) of the adopted roadmap.
 
 ## Quick start
 

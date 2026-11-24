@@ -345,10 +345,10 @@ against a record of what it should be.**
 | Migrations | this project's rows in `migration_history` | the `migrationCount` in the active pointer that chose the database |
 | Surfaceable items | this project's `knowledge_items` whose status is `approved`, `draft` or `proposed` | `project_integrity.expected_surfaceable_count`, written by `theurian migrate apply` inside its own write transaction |
 
-Either pair disagreeing sets the key. The state database is immutable once built,
+Either pair disagreeing sets the key. An apply with nothing pending replaces a
+built state's traceability edges and walk record and no row either count reads,
 so both pairs agree on a healthy project and a difference in *either* direction is
-damage: fewer when a row is lost or falls out of a `WHERE` (a sentinel in
-`migration_history.project_id`, `knowledge_items.project_id` or
+damage: fewer when a row is lost or falls out of a `WHERE` (a sentinel in `migration_history.project_id`, `knowledge_items.project_id` or
 `knowledge_items.status`), more when another project's rows reach this one. This
 is a change in *how many* surfaceable rows there are, not in *which* surfaceable
 status a row holds: both counts include `approved`, `draft` and `proposed` alike,

@@ -4769,7 +4769,7 @@ breakdown it had already read.
 **One apply re-records and another deliberately does not; the residual is the
 honest half of that choice.** `migrate apply` records only when it created the
 database or applied a migration (`created or report.changed`). An apply with
-nothing pending writes nothing and must not re-record, because it is step one of
+nothing pending replaces only its edges and walk record and must not re-record, because it is step one of
 the remedy this very signal publishes: re-recording there would take the count
 *from the damaged state* and clear the signal while the damage stood — the remedy
 manufacturing its own all-clear. Both directions are pinned

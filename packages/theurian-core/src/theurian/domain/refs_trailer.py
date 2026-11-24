@@ -1,6 +1,6 @@
 """Traceability edges declared by ``Refs:`` commit trailers (ADR-0040 decisions 1-3).
 
-Decisions ADR-0040 does not yet record:
+Recorded in ADR-0040's amendments to decisions 2 and 3 (2026-11-24):
 
 - **Edge id.** The first 128 bits of SHA-256(sha ‖ 0x00 ‖ path ‖ 0x00 ‖ item id)
   over UTF-8, read big-endian and Crockford-base32 encoded to 26 characters, most
