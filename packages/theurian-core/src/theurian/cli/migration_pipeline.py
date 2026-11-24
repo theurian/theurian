@@ -120,7 +120,7 @@ def apply_migration_set(  # noqa: PLR0913 -- everything that differs between a r
 
     ``walk`` is the first-parent walk ``migrate apply`` ran before taking the
     lock (NFR-8), or ``None`` at a replay. Either way the transaction replaces the
-    project's edge set and walk record on every call, nothing pending included
+    whole edge set and the walk record on every call, nothing pending included
     (ADR-0040 decision 2), and the report carries what it recorded.
 
     Raises:
@@ -203,7 +203,7 @@ def _collect_edges(
     where they are the same edge and are kept once. It omits the project id, and a
     state database can hold more than one project (a project-id change registers a
     second row), so the replace is whole-table: the edge set, like the walk record,
-    is the latest walk of this checkout.
+    is the walk of the last apply to commit in this checkout.
     """
     walked: list[CommitRefs] = []
 
