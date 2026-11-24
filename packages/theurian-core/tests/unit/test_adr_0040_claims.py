@@ -785,7 +785,7 @@ FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
-AMENDED: Final[frozenset[int]] = frozenset({4, 6, 8, 20})
+AMENDED: Final[frozenset[int]] = frozenset({4, 6, *range(8, 21)})
 
 
 @pytest.mark.parametrize(

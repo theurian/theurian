@@ -86,19 +86,38 @@ _SPECIFICATION_READERS: Final = frozenset({"get_specification", "list_specificat
 # -- Context: the entity's store methods and the table's SQL ------------------
 
 
-def test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_only_tested() -> None:
-    edge_methods = frozenset({"add_traceability_edge", "list_traceability_edges"})
-    round_trip = "packages/theurian-core/tests/integration/test_canonical_store.py"
+def test_the_traceability_edge_methods_are_referenced_by_the_collector_and_tests_alone() -> None:
+    """Key: a public function the port or the store defines with ``edge`` in its name."""
+    tests = "packages/theurian-core/tests/integration/"
+    _, defined = _index()
+    expected = {
+        "add_traceability_edge": ({PORT, STORE}, {tests + "test_canonical_store.py"}),
+        "list_traceability_edges": ({PORT, STORE}, {tests + "test_canonical_store.py"}),
+        "replace_traceability_edges": (
+            {STORE},
+            {SRC + "cli/migration_pipeline.py", tests + "test_edge_collection_cli.py"},
+        ),
+        "count_edges_naming_no_item": (
+            {STORE},
+            {SRC + "cli/migration_pipeline.py", tests + "test_canonical_store_corruption.py"},
+        ),
+    }
 
     assert _references(frozenset({"register_specification"})), (
         "positive control: the reference scan no longer sees the engine's known write"
     )
-    for name in edge_methods:
-        assert _definitions(name) == {PORT, STORE}, f"{name} is defined outside the port and store"
-    assert _references(edge_methods) == {(round_trip, name) for name in edge_methods}, (
-        "a traceability edge method is now referenced outside its round-trip test; "
-        "ADR-0038's `No edge exists yet` and #277's `cheap moment` both move with it"
-    )
+    assert {
+        name
+        for name, paths in defined.items()
+        if "edge" in name and not name.startswith("_") and paths & {PORT, STORE}
+    } == set(expected)
+    for name, (definitions, referencers) in expected.items():
+        assert _definitions(name) == definitions, f"{name} is defined outside the port and store"
+        assert {path for path, _ in _references(frozenset({name}))} == referencers, (
+            f"{name} is referenced outside the collector and the tests named here (#1033's S3: "
+            "no other reader of edges until #1034); decide what the new reference reads, then "
+            "add it"
+        )
 
 
 def test_the_reference_key_counts_an_attribute_a_bare_name_and_a_whole_string_only(
@@ -310,8 +329,8 @@ def test_every_whole_object_read_in_src_is_one_already_judged_not_to_publish_a_r
         (SRC + "application/setup_steps.py", "_service_path", "getattr"),
         (SRC + "cli/setup_commands.py", "_service_path", "getattr"),
         (SRC + "domain/raptor.py", "_differing_components", "getattr"),
-        # Handed `edge.evidence`'s `SourceAnchor`s, never a revision.
-        (SRC + "infrastructure/sqlite/store.py", "add_traceability_edge", "asdict"),
+        # Handed `edge.evidence`'s `SourceAnchor`s, never a revision; both edge writers call it.
+        (SRC + "infrastructure/sqlite/store.py", "_edge_parameters", "asdict"),
         (SRC + "domain/review_finding.py", "_matching_surface", "vars"),
         (SRC + "domain/review_search.py", "texts_of", "getattr"),
         (SRC + "security/yaml_loading.py", "_drop_implicit_resolver", "__dict__"),

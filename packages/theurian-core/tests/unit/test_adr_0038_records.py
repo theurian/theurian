@@ -292,7 +292,7 @@ def test_the_schema_module_docstring_says_the_store_is_replayable_from_git() -> 
     ) in _collapsed(sqlite_schema.__doc__ or "")
 
 
-def test_unpopulated_tables_excludes_traceability_edges_alone() -> None:
+def test_unpopulated_tables_is_empty_now_the_corpus_holds_an_edge() -> None:
     values = [
         node.value
         for node in ast.walk(_trees()[CORRUPTION_TEST])
@@ -304,10 +304,7 @@ def test_unpopulated_tables_excludes_traceability_edges_alone() -> None:
         }
     ]
 
-    assert len(values) == 1
-    assert isinstance(values[0], ast.Call)
-    assert ast.unparse(values[0].func) == "frozenset"
-    assert ast.literal_eval(values[0].args[0]) == {"traceability_edges"}
+    assert [ast.unparse(value) for value in values if value is not None] == ["frozenset()"]
 
 
 def test_the_engine_version_is_hashed_into_the_state_and_its_comment_says_why() -> None:

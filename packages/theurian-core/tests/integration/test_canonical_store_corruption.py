@@ -398,15 +398,11 @@ REFUSED_OVER_A_NON_ISO_VALID_TO: Final = frozenset(
     }
 )
 
-#: Declared by the DDL, written by no migration operation and read by no store
-#: method. Excluded from the corpus-coverage guard with its reason, so the guard
-#: stays a real check on every other table.
-UNPOPULATED_TABLES: Final = frozenset({"traceability_edges"})
+UNPOPULATED_TABLES: Final[frozenset[str]] = frozenset()
 
 #: How many columns a single ``UPDATE`` can put a string into, across the whole
 #: populated schema. Arithmetic over the DDL, table by table, ``INTEGER PRIMARY
-#: KEY`` rowids and `traceability_edges` excluded: 9 + 8 + 24 + 13 + 4 + 6 + 11
-#: + 13 + 11 + 5 + 2.
+#: KEY`` rowids excluded: 9 + 8 + 24 + 13 + 4 + 6 + 11 + 13 + 11 + 11 + 5 + 2.
 #:
 #: The first term is `schema_metadata`, five of whose columns arrived with schema
 #: version 5 (ADR-0040 decision 4); the last is `project_integrity`, added with
@@ -416,7 +412,7 @@ UNPOPULATED_TABLES: Final = frozenset({"traceability_edges"})
 #: -- let nine columns vanish from the sweep without a word, and a sweep that
 #: has quietly stopped covering a column asserts nothing about it while still
 #: reporting green.
-CORRUPTIBLE_COLUMN_COUNT: Final = 106
+CORRUPTIBLE_COLUMN_COUNT: Final = 117
 
 BODY: Final = "# Authentication policy\n\nEvery call carries a signed token.\n"
 DRAFT_BODY: Final = "# Caching draft\n\nA proposal nobody has reviewed.\n"
@@ -755,6 +751,9 @@ def _build_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
     (knowledge / "caching-draft.md").write_text(DRAFT_BODY)
     (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
     _run("project", "register")
+    commit_migrations()
+    (root / "a.py").write_text("a\n")
+    commit_migrations(message="a\n\nRefs: architecture.auth-policy\nRefs: architecture.absent")
     _run("migrate", "apply")
     _run("index", "build")
 
@@ -766,7 +765,7 @@ def _build_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
 
 @pytest.fixture
 def corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Corpus:
-    """One project holding a row in every table a migration can write.
+    """One project holding a row in every table, an edge from a ``Refs:`` commit among them.
 
     Indexed as well as migrated, so `knowledge.search` answers through
     ``ResultGate`` -- the canonical read site reached by
@@ -1479,8 +1478,8 @@ async def test_the_corpus_reaches_each_converter_family(
 
 # -- Where the guard sits, on the writer -----------------------------------
 #
-# `SqliteWriter` reads eight times and is guarded six times (`_writer_reads`,
-# held against the two lists below by the partition test). Before this sweep
+# `SqliteWriter`'s reads, guarded or not, are what `_writer_reads` derives, held
+# against the three lists below by the partition test. Before this sweep
 # held either half, deleting any of the then four guards left the suite green
 # while the corrupted cell walked out of `theurian migrate status` -- so the
 # placement was correct and unproven, which is the state a later edit removes
@@ -1506,9 +1505,8 @@ ITEM_ID: Final = ItemId("architecture.auth-policy")
 REVISION_ID: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 APPLIED_AT: Final = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
-#: Six of the eight reads :class:`SqliteWriter` performs, each over a cell whose
-#: converter quotes what it would not accept. Every one of these six sits behind
-#: a guard today. The other two -- `append_revision`'s `SELECT item_id,
+#: The guarded reads :class:`SqliteWriter` performs over a cell whose converter
+#: quotes what it would not accept. The other two -- `append_revision`'s `SELECT item_id,
 #: content_sha256` and `_refuse_pointer_to_another_items_revision`'s `SELECT
 #: item_id` -- deliberately do not, and are recorded with their reasons in
 #: :data:`WRITER_READS_NOT_GUARDED` rather than swept here.
@@ -1589,6 +1587,17 @@ WRITER_READS_NOT_GUARDED: Final = {
         "would answer a cross-item pointer with the delete-the-state remedy "
         "`test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state` "
         "holds against."
+    ),
+}
+
+#: Guarded reads that interpret no stored cell, so the sweep above would find nothing to
+#: refuse; each reason names where its call site is swept instead.
+WRITER_READS_INTERPRETING_NOTHING: Final = {
+    ("count_edges_naming_no_item", "traceability_edges"): (
+        "returns `source_commit` opaque, as a key, beside a computed `COUNT(*)`. Its one call "
+        "site, `_collect_edges`, runs it after the same transaction's replace has deleted every "
+        "stored edge and looks it up by walked sha only; `migrate apply` over each damaged edge "
+        "cell is swept by `test_no_cli_output_repeats_a_byte_of_the_state_database`"
     ),
 }
 
@@ -1744,7 +1753,7 @@ def test_a_writers_read_of_a_damaged_cell_answers_without_quoting_it(
 def test_a_failure_inside_the_write_transaction_never_offers_to_delete_the_state(
     corpus: Corpus,
 ) -> None:
-    """The inverse, and the reason the writer is guarded six times and not seven.
+    """The inverse, and the reason `append_revision`'s read is not guarded.
 
     `append_revision` reads a stored `content_sha256` and is deliberately *not*
     guarded, because past ``BEGIN IMMEDIATE`` a failure is the caller's statement
@@ -1906,6 +1915,7 @@ def test_every_read_the_writer_performs_is_guarded_or_excluded_with_a_reason() -
     guarded = frozenset((site.method, site.table) for site in reads if site.guarded)
     unguarded = frozenset((site.method, site.table) for site in reads if not site.guarded)
     swept = frozenset((method, table) for method, table, _name, _call in WRITER_READS)
+    swept |= frozenset(WRITER_READS_INTERPRETING_NOTHING)
     excluded = frozenset(WRITER_READS_NOT_GUARDED)
 
     assert reads, (
@@ -1933,7 +1943,7 @@ def test_every_read_the_writer_performs_is_guarded_or_excluded_with_a_reason() -
         f"means the scan could not read the table out of the SQL, not that the "
         f"read is exempt."
     )
-    assert all(WRITER_READS_NOT_GUARDED.values()), (
+    assert all([*WRITER_READS_NOT_GUARDED.values(), *WRITER_READS_INTERPRETING_NOTHING.values()]), (
         "an exclusion without a reason is a read someone forgot to guard"
     )
 

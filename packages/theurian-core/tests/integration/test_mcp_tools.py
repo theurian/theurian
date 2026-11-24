@@ -7142,8 +7142,9 @@ async def test_an_unparseable_as_of_is_a_clean_tool_error(
 
 # -- #30 PR1: the present-only `integrity` damage signal --------------------
 #
-# The canonical store is derived and immutable once built (ADR-0004), so the
-# active pointer that chose it records how many migrations it was built from --
+# The canonical store is derived (ADR-0004), and an apply into it leaves its
+# migration history as it was (it replaces only the edge set and walk record), so
+# the active pointer that chose it records how many migrations it was built from --
 # `ActiveState.migration_count` -- and a healthy project's live
 # `migration_history` row count equals that number. PR1 discloses a difference
 # through a present-only `integrity` object on all three read tools: present
@@ -7871,8 +7872,8 @@ async def test_a_surplus_migration_row_is_damage_on_every_read_tool(
 ) -> None:
     """#30 PR1. The detector compares with `!=`, so *more* rows are damage as well.
 
-    The state database is immutable once built, so a live count above the
-    pointer's is not a project that got ahead -- it is rows that were never
+    An apply into a built state database leaves its migration history as it was, so a live
+    count above the pointer's is not a project that got ahead -- it is rows that were never
     applied here, and an answer assembled from them is an answer from a state
     nobody recorded. `<` or `>=` in place of `!=` calls that healthy, and no
     fixture in this file could tell: every other damage it writes *removes*
@@ -8147,8 +8148,8 @@ async def test_a_re_apply_and_a_third_migration_leave_every_tool_silent(
     a pointer written before the last row lands, an idempotent re-apply that
     bumps `migrationCount` without writing a row -- would fire `integrity` on a
     project nobody damaged and turn the signal into noise a caller learns to
-    ignore. So the pointer and the rows are compared again after a re-apply that
-    changes nothing, and again after a third migration that changes both.
+    ignore. So the pointer and the rows are compared again after a re-apply with
+    nothing pending, and again after a third migration that changes both.
 
     The guard is the row count read straight from SQLite beside the pointer's:
     silence proves the detector chose it only if the two operands really are
@@ -8551,8 +8552,8 @@ async def test_a_pending_free_apply_does_not_re_record_over_a_damaged_state(
     """#30 PR2. The *not*-recording half, which is the load-bearing one.
 
     `migrate apply` is step one of the remedy the signal publishes. An apply with
-    nothing pending writes nothing, so re-recording there would count the rows
-    the damaged state currently holds and store that as the new expectation --
+    nothing pending leaves the knowledge rows as they were, so re-recording there
+    would count the rows the damaged state currently holds and store that as the new expectation --
     the signal would clear while the damage stood, and the remedy would
     manufacture the all-clear it was run to earn. Only the second step of the
     remedy (delete `.theurian/state/`, apply again) rebuilds the file, and that
@@ -8718,12 +8719,13 @@ async def test_a_surplus_surfaceable_item_is_damage_on_every_read_tool(
 ) -> None:
     """#30 PR2. The surfaceable comparison is `!=`, so *more* items is damage too.
 
-    The state database is immutable once built, so a live surfaceable count above
-    what `migrate apply` recorded is not a project that grew -- it is a row that was
-    never applied here, and an answer assembled from it comes from a state nobody
-    recorded. `==` -> `>=` (or `<`) on the surfaceable term calls that healthy, and
-    no other fixture could tell: every other surfaceable damage in this suite
-    *removes* reach, so `live > expected` had never been built.
+    An apply into a built state database leaves its knowledge rows as they were, so
+    a live surfaceable count above what `migrate apply` recorded is not a project
+    that grew -- it is a row that was never applied here, and an answer assembled
+    from it comes from a state nobody recorded. `==` -> `>=` (or `<`) on the
+    surfaceable term calls that healthy, and no other fixture could tell: every
+    other surfaceable damage in this suite *removes* reach, so `live > expected`
+    had never been built.
 
     All three surfaces in one test, because the claim is one -- the direction of a
     single comparison -- reaching a caller three ways: a field on `search` and
