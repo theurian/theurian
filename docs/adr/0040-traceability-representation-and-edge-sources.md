@@ -835,8 +835,8 @@ gate decides (row 9).
 >    project's insert on `edge_id`'s primary key (C-H1, HIGH, in
 >    [#1097](https://github.com/theurian/theurian/pull/1097)'s round-one code
 >    review); the rows it inserts carry the applying project's id. The edge set
->    is the latest walk of this checkout, as the walk record in
->    `schema_metadata` is.
+>    is the walk of the last apply to commit in this checkout, as the walk
+>    record in `schema_metadata` is.
 > 5. **The edge id and its evidence** ("An edge's id and `created_at` derive
 >    from its commit"). The id is the first 128 bits of
 >    SHA-256(sha ‖ 0x00 ‖ path ‖ 0x00 ‖ item id) over UTF-8, Crockford-base32
