@@ -397,8 +397,9 @@ class CanonicalStore(Protocol):
 
         The bounded integrity signal a tool emits on ``#30``: the active pointer
         that chose the state database records how many migrations it was built
-        from (``ActiveState.migration_count``), and the state database is
-        immutable once built, so in a healthy project this count equals that
+        from (``ActiveState.migration_count``), and a later apply into that
+        database leaves its migration history as it was (it replaces the edge
+        set and walk record), so in a healthy project this count equals that
         number. A difference is damage -- a corrupt ``project_id`` cell dropping
         the row out of the ``WHERE``, a lost row, or another project's rows
         bleeding in -- which a tool reads back and discloses rather than

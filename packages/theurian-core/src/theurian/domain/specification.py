@@ -120,6 +120,35 @@ class TraceabilityEdge:
 
 
 @dataclass(frozen=True, slots=True)
+class FlaggedCommit:
+    """A walked commit the apply report names: by sha, with counts and flags, never values."""
+
+    sha: str
+    refused: int
+    capped: bool
+    undecodable: bool
+    undated: bool
+    absent_items: int
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeCollection:
+    """What one apply's edge collection recorded (ADR-0040 decisions 2 and 3).
+
+    The boundary is as ``schema_metadata`` holds it: null throughout without a walk commit.
+    ``commits`` holds only those with a count or a flag, in walk order.
+    """
+
+    walk_commit: str | None
+    edges: int
+    shallow_digest: str | None
+    depth_bounded: bool | None
+    budget_bounded: bool | None
+    capped_digest: str | None
+    commits: tuple[FlaggedCommit, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TraceabilityRule:
     """What a given change type must be able to prove (§22 of the brief)."""
 

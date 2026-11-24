@@ -95,6 +95,7 @@ from theurian.domain.values import MediaType
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
 from theurian.infrastructure.git.committed_check import CommittedMigrationCheck, HeadComparison
+from theurian.infrastructure.git.first_parent_walk import GitWalkRefusedError, walk_first_parent
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
@@ -1133,10 +1134,11 @@ def _discard_untrusted_state(database: Path) -> None:
     A database file at the name this build would use, that this installation
     did not produce -- a doctored `.theurian/state/` shipped in the repository
     past its ADR-0004 ignore. Applying migrations *into* it would leave its
-    injected rows untouched (an idempotent replay writes nothing) and then
-    stamp the result as this install's build. `git rm --cached` is still the
-    user's job for a tracked copy (the refusal on the serve side names it);
-    this only stops the untrusted bytes from being adopted here.
+    injected knowledge rows untouched (an idempotent replay leaves them as they
+    are) and then stamp the result as this install's build.
+    `git rm --cached` is still the user's job for a tracked copy (the refusal on
+    the serve side names it); this only stops the untrusted bytes from being
+    adopted here.
     """
     _unlink_database_and_sidecars(database)
 
@@ -2529,8 +2531,9 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
 ) -> None:
     """Apply pending migrations to the canonical store.
 
-    Idempotent: applying an unchanged set again reports zero applied and changes
-    nothing (FR-K8).
+    Idempotent: applying an unchanged set again reports zero applied and leaves
+    knowledge unchanged (FR-K8), while every apply re-collects traceability edges
+    from first-parent history at HEAD.
 
     Prints `permissiveMoves`, a report and never a refusal: outside `reorders`, one row per
     `upsertRevision` this run applied that loosened an item's `status` or
@@ -2632,6 +2635,16 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
         last_seen_commit=current_commit(context.paths.root),
     )
 
+    # Outside the lock for the same reason, and the one read of HEAD the edges rest on: they
+    # are recorded at the walk's own commit, not at `last_seen_commit` (ADR-0040 decision 2).
+    try:
+        walk = walk_first_parent(context.paths.root)
+    except GitWalkRefusedError as exc:
+        # Its text and remedy only: a shallow-read refusal's cause names the file's absolute
+        # path (#1092 R1 security LOW-1).
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        return
+
     created = False
     try:
         with WriteLock(context.paths.write_lock).held():
@@ -2690,6 +2703,7 @@ def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one br
                     clock=context.clock,
                     database_created=created,
                     already_locked=True,
+                    walk=walk,
                 )
             except MigrationChecksumMismatchError as exc:
                 _fail(
