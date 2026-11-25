@@ -471,3 +471,25 @@ def test_an_apply_after_a_project_id_change_replaces_the_whole_edge_table(
     assert _rows(root, "SELECT project_id, source_id FROM traceability_edges") == [
         ("renamed", "a.py")
     ]
+
+
+def _listed(stdout: str) -> list[str]:
+    """The text form's flagged commits: the last list, under ``traceability``."""
+    return [line.removeprefix("    - ") for line in stdout.split("  commits:\n")[1].splitlines()]
+
+
+def test_the_text_form_lists_twenty_flagged_commits_and_counts_the_rest(project: Path) -> None:
+    """Adv L4 (#1097 R1, adopted): under GitHub's ``Refs: #N`` every commit is refused and
+    flagged, and the text form printed a line for each, up to 10,000; ``--json`` keeps them all.
+    """
+    shas = [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20)]
+    at_cap = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+    shas += [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20, 23)]
+
+    over = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+    payload = _apply()[1]
+
+    rows = [f"{sha} refused=1" for sha in reversed(shas)]
+    assert at_cap == rows[3:]
+    assert over == [*rows[:20], "\u2026 and 3 more; see --json"]
+    assert [row["sha"] for row in payload["traceability"]["commits"]] == list(reversed(shas))
