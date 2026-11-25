@@ -509,16 +509,24 @@ def test_the_text_form_lists_twenty_flagged_commits_and_counts_the_rest(project:
     """Adv L4 (#1097 R1, adopted): under GitHub's ``Refs: #N`` every commit is refused and
     flagged, and the text form printed a line for each, up to 10,000; ``--json`` keeps them all.
     """
-    shas = [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20)]
-    at_cap = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
-    shas += [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20, 21)]
 
-    over = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+    shas: list[str] = []
+
+    def apply_after(numbers: range) -> list[str]:
+        shas.extend(_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in numbers)
+        return _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+
+    def rows(count: int) -> list[str]:
+        return [f"{sha} refused=1" for sha in reversed(shas[:count])]
+
+    at_cap = apply_after(range(20))
+    over = apply_after(range(20, 21))
+    well_over = apply_after(range(21, 41))
     payload = _apply()[1]
 
-    rows = [f"{sha} refused=1" for sha in reversed(shas)]
-    assert at_cap == rows[1:]
-    assert over == [*rows[:20], "\u2026 and 1 more; see --json"]
+    assert at_cap == rows(20)
+    assert over == [*rows(21)[:20], "\u2026 and 1 more; see --json"]
+    assert well_over == [*rows(41)[:20], "\u2026 and 21 more; see --json"]
     assert [row["sha"] for row in payload["traceability"]["commits"]] == list(reversed(shas))
 
 
@@ -566,19 +574,19 @@ def test_the_walk_record_and_the_report_are_what_the_walk_returned(
 
 def test_the_absent_item_count_is_attributed_to_each_commit(project: Path) -> None:
     """C-M1 (#1097 R1): ADR-0040 3(b)'s count is per commit, so unequal counts must not pool,
-    and it counts edges naming no item, not distinct absent ids: one id on two paths is 2.
+    and it counts edges naming no item, not distinct absent ids: two ids on two paths is 4.
     """
     one = _commit(project, "a.py", f"a\n\nRefs: {NEVER}\n")
     two = _commit(project, "b.py", f"b\n\nRefs: {NEVER}\nRefs: {NEVER}-2\n")
     (project / "x.py").write_text("x")
     (project / "y.py").write_text("y")
     git(project, "add", "x.py", "y.py")
-    git(project, "commit", "-q", "-m", f"xy\n\nRefs: {NEVER}\n", extra_env=_DATED)
+    git(project, "commit", "-q", "-m", f"xy\n\nRefs: {NEVER}\nRefs: {NEVER}-2\n", extra_env=_DATED)
     paths = git(project, "rev-parse", "HEAD").strip()
 
     commits = _apply()[1]["traceability"]["commits"]
 
-    assert [(row["sha"], row["absentItems"]) for row in commits] == [(paths, 2), (two, 2), (one, 1)]
+    assert [(row["sha"], row["absentItems"]) for row in commits] == [(paths, 4), (two, 2), (one, 1)]
 
 
 def test_a_rename_commit_records_an_edge_for_both_paths(project: Path) -> None:
