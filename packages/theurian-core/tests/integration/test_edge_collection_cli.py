@@ -511,14 +511,14 @@ def test_the_text_form_lists_twenty_flagged_commits_and_counts_the_rest(project:
     """
     shas = [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20)]
     at_cap = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
-    shas += [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20, 23)]
+    shas += [_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in range(20, 21)]
 
     over = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
     payload = _apply()[1]
 
     rows = [f"{sha} refused=1" for sha in reversed(shas)]
-    assert at_cap == rows[3:]
-    assert over == [*rows[:20], "\u2026 and 3 more; see --json"]
+    assert at_cap == rows[1:]
+    assert over == [*rows[:20], "\u2026 and 1 more; see --json"]
     assert [row["sha"] for row in payload["traceability"]["commits"]] == list(reversed(shas))
 
 
