@@ -565,13 +565,20 @@ def test_the_walk_record_and_the_report_are_what_the_walk_returned(
 
 
 def test_the_absent_item_count_is_attributed_to_each_commit(project: Path) -> None:
-    """C-M1 (#1097 R1): ADR-0040 3(b)'s count is per commit, so unequal counts must not pool."""
+    """C-M1 (#1097 R1): ADR-0040 3(b)'s count is per commit, so unequal counts must not pool,
+    and it counts edges naming no item, not distinct absent ids: one id on two paths is 2.
+    """
     one = _commit(project, "a.py", f"a\n\nRefs: {NEVER}\n")
     two = _commit(project, "b.py", f"b\n\nRefs: {NEVER}\nRefs: {NEVER}-2\n")
+    (project / "x.py").write_text("x")
+    (project / "y.py").write_text("y")
+    git(project, "add", "x.py", "y.py")
+    git(project, "commit", "-q", "-m", f"xy\n\nRefs: {NEVER}\n", extra_env=_DATED)
+    paths = git(project, "rev-parse", "HEAD").strip()
 
     commits = _apply()[1]["traceability"]["commits"]
 
-    assert [(row["sha"], row["absentItems"]) for row in commits] == [(two, 2), (one, 1)]
+    assert [(row["sha"], row["absentItems"]) for row in commits] == [(paths, 2), (two, 2), (one, 1)]
 
 
 def test_a_rename_commit_records_an_edge_for_both_paths(project: Path) -> None:
