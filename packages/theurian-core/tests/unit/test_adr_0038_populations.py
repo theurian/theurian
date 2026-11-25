@@ -89,10 +89,17 @@ _SPECIFICATION_READERS: Final = frozenset({"get_specification", "list_specificat
 def test_the_traceability_edge_methods_are_referenced_by_the_collector_and_tests_alone() -> None:
     """Key: a public function the port or the store defines with ``edge`` in its name."""
     tests = "packages/theurian-core/tests/integration/"
+    filters = tests + "test_traceability_edge_filters.py"
     _, defined = _index()
     expected = {
-        "add_traceability_edge": ({PORT, STORE}, {tests + "test_canonical_store.py"}),
-        "list_traceability_edges": ({PORT, STORE}, {tests + "test_canonical_store.py"}),
+        "add_traceability_edge": (
+            {PORT, STORE},
+            {tests + "test_canonical_store.py", filters},
+        ),
+        "list_traceability_edges": (
+            {PORT, STORE},
+            {tests + "test_canonical_store.py", filters},
+        ),
         "replace_traceability_edges": (
             {STORE},
             {SRC + "cli/migration_pipeline.py", tests + "test_edge_collection_cli.py"},
