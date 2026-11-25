@@ -570,3 +570,19 @@ def test_the_absent_item_count_is_attributed_to_each_commit(project: Path) -> No
     commits = _apply()[1]["traceability"]["commits"]
 
     assert [(row["sha"], row["absentItems"]) for row in commits] == [(two, 2), (one, 1)]
+
+
+def test_a_rename_commit_records_an_edge_for_both_paths(project: Path) -> None:
+    """A-M5 (#1097 R1): ADR-0040 decision 2's ``--no-renames``. A detected rename made the
+    diff-tree reader refuse every apply with a rename in its history."""
+    _commit(project, "a.py", "plain\n")
+    git(project, "mv", "a.py", "b.py")
+    git(project, "commit", "-q", "-m", f"rename\n\nRefs: {ITEM}\n", extra_env=_DATED)
+    head = git(project, "rev-parse", "HEAD").strip()
+
+    result, payload = _apply()
+
+    assert result.exit_code == 0, payload
+    assert _rows(project, EDGES) == [
+        (head, "code", path, "knowledge", ITEM) for path in ("a.py", "b.py")
+    ]
