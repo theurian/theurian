@@ -289,16 +289,23 @@ leaves `state_hash` unchanged.**
 
 **A state's identity is (`state_hash`, walk commit, boundary), and two states
 with one identity hold the same edges;** a state whose collection was capped or
-bounded never shares an identity with one whose was not. `state_hash` names the
+bounded never shares an identity with one whose was not. *Amended 2026-11-25: a
+tree-bounded state's identity does not name its edge set ("Amended 2026-11-25",
+after decision 9).* `state_hash` names the
 canonical state (ADR-0016) and, through `MIGRATION_ENGINE_VERSION`, the
 collector's rules, so a change to them, the bounds and caps below among them,
 bumps it. The boundary is what the walk left uncollected: the shallow digest,
 whether the depth bound or the read budget stopped it, and the capped digest.
+*Amended 2026-11-25: in a promisor clone the tree bound stops it too, stored as
+the depth bound.*
 The collector reads Git and nothing else (decision 3(b)), so after an apply the
 edges are a function of the objects first-parent-reachable from the walk commit,
 the shallow list and those rules alone: no environment variable, no
 configuration at any level, and no replace ref, graft or commit-graph reaches
-them. That holds under the prerequisites an independent source read names, each
+them. *Amended 2026-11-25: a tree-bounded state's edges also depend on which
+trees the clone holds, and whether a missing one bounds the walk or refuses it
+depends on git configuration.* That holds under the prerequisites an
+independent source read names, each
 held below or recorded outside the claim:
 
 - **Plumbing, over the walk OID.** `git rev-list --first-parent --parents <OID>`
@@ -351,7 +358,10 @@ held below or recorded outside the claim:
 - A failure to read `HEAD`, a walk that fails or outlives the 30-second
   subprocess timeout (`infrastructure/git/trailer_source.py:95`), and a stream
   the framing cannot read refuse the build. None of them degrades to "no
-  edges", because then one identity would name two edge sets. `current_commit`
+  edges", because then one identity would name two edge sets. *Amended
+  2026-11-25: in a promisor clone diff-tree's exit 128 is the tree bound, not a
+  refusal, and a promisor read that fails answers no rather than refusing.*
+  `current_commit`
   returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:96-108`),
   so the collector reads `HEAD` through a call that tells the two apart.
 
@@ -446,7 +456,10 @@ edges would depend on a command nothing else requires.
   edges are a function of history alone and identical in two corpora that
   differ only by a withheld item; a drop-on-absence rule would store the edge
   where the item exists and is withheld, and not where it is absent, so the
-  edge table itself would vary with withheld content. The per-hop gate withholds
+  edge table itself would vary with withheld content. *Amended 2026-11-25: in a
+  promisor clone, of history and of which trees the clone holds; neither is a
+  canonical row, so the reason stands ("Amended 2026-11-25", after decision
+  9).* The per-hop gate withholds
   a missing endpoint (decision 6), so a recorded edge to an absent id surfaces
   exactly what one to a withheld item does: nothing. And a dropped declaration
   is an edge the contributor believes exists; a recorded one starts to surface,
@@ -686,7 +699,7 @@ statements, under names that say *recorded edges*:
 | `recordedEdgesCommit` | the commit the state's edges were collected at (decision 2); null with no Git history |
 | `recordedEdgesWalked` | how many recorded edges the traversal walked — counted after the gate, so only edges whose endpoints passed |
 | `recordedEdgesHistoryShallow` | whether collection stopped at a shallow boundary |
-| `recordedEdgesDepthBounded` | whether collection stopped at the depth bound (decision 2) |
+| `recordedEdgesDepthBounded` | whether collection stopped at the depth bound (decision 2). *Amended 2026-11-25: or at a promisor clone's tree bound, which `walk_depth_bounded` stores as the depth bound, so this field cannot tell the two apart ("Amended 2026-11-25", after decision 9)* |
 | `recordedEdgesBudgetBounded` | whether collection stopped at the read budget (decision 2) |
 | `recordedEdgesCapped` | whether collection skipped a commit over a per-commit cap (decisions 2 and 3(c)) |
 | `recordedEdgesCoverage` | the constant `"not-claimed"`: the response asserts nothing about edges that were never recorded |
@@ -911,6 +924,161 @@ gate decides (row 9).
 >     release's `SCHEMA_VERSION` 5 rebuilds every upgrader's state anyway (the
 >     `watchdog` agent's ruling of 2026-11-20). The rule binds every later
 >     change to the collector.
+
+### Amended 2026-11-25 — decision 2's tree bound in a promisor clone (#1103)
+
+> **Amended 2026-11-25, for [#1103](https://github.com/theurian/theurian/issues/1103)'s
+> fix as [#1105](https://github.com/theurian/theurian/pull/1105) built it, on
+> the collection [#1098](https://github.com/theurian/theurian/pull/1098)
+> finished (`7b13dca5`).** It fixes a regression against core-v0.5.3 that no
+> release carried. On a treeless partial clone (`git clone --filter=tree:0`)
+> 0.5.3's `migrate apply` exits 0; at `8bd840cf` it exited 4 at
+> `git diff-tree` and named `git fsck` as the remedy, and fsck exits 0 there and
+> reports nothing (#1103's reproduction), so nothing cured it. Each item names
+> the sentence it amends, which stays where it is with a pointer here.
+>
+> 1. **A tree a promisor clone does not hold bounds the walk** ("None of them
+>    degrades to 'no edges'"). `GIT_NO_LAZY_FETCH` keeps git from fetching what
+>    a partial clone left on its promisor remote, and it stays. In a promisor
+>    clone, diff-tree's exit 128 is the tree bound: the walk keeps the commits
+>    before the first one whose tree, or whose first parent's tree, the clone
+>    does not hold, none from that one on, and the apply succeeds. diff-tree
+>    emits a commit's record only once both trees are read, so no commit is
+>    collected in part (measured in #1105: no partial record at a subtree
+>    missing mid-commit). A fresh treeless clone holds its walk commit's tree
+>    and not its parent's, so it records 0 edges. Any exit 128 there is the
+>    bound, whatever its cause: the walk discards git's stderr, so a tree that
+>    is present and corrupt bounds it too (read from source). Every other
+>    non-zero exit, and an exit 128 anywhere but a promisor clone, still
+>    refuses. Chosen as (b) by the `watchdog` agent's ruling of 2026-11-25.
+>    Rejected: (a) refusing with a corrected remedy, which still blocks the
+>    apply until the user fetches; (c) allowing the lazy fetch, which is
+>    network I/O inside the walk and removes the control `GIT_NO_LAZY_FETCH` is.
+> 2. **Whether a clone is a promisor is read from git configuration, before the
+>    walk** ("no configuration at any level"). After `rev-parse` and before
+>    `rev-list`, the walk spawns `git config` once or twice:
+>    `config --type=bool -z --get-regexp '^remote\.(.*\.)?promisor$'` over every
+>    scope git reads, then, if no value is true,
+>    `config --local -z --get extensions.partialclone`. They are the two sources
+>    git's `promisor-remote.c` reads: includes, `config.worktree` and global
+>    configuration count for the first, the common directory's config file
+>    alone for the second (measured in #1105 against git's own lazy fetch at
+>    2.56.0; the tests drive the clone's own `remote.origin.promisor` and the
+>    extension alone, not includes or `config.worktree`). A read that fails,
+>    outlives its deadline or ends inside a record answers *not a promisor*, at
+>    the cost of at most that one deadline: killed there as item 9 of the
+>    amendment above says, it answers rather than refusing at once. Unlike the
+>    walk's other spawns, none of its failures refuses the build, and its *no*
+>    keeps the refusal a damaged repository needs
+>    (`test_a_promisor_read_that_fails_answers_no_so_an_unreadable_tree_refuses`).
+>    Both reads run inside the walk, before the write lock, so NFR-8 holds:
+>    `test_no_git_process_starts_while_the_write_lock_is_held` now requires a
+>    `config` spawn before the lock, and still none under it. They take no feed
+>    and get `subprocess.DEVNULL` as stdin, as item 11 of the amendment above
+>    says of three other spawns, and their output is outside the read budget,
+>    as `rev-parse`'s is. The walk now spawns at most six times, so that
+>    amendment's item 1, "each of its four spawns' 30-second deadline", counts
+>    the walk before this fix. `config` is a new subcommand at an existing spawn
+>    site, so `PROCESS_SPAWN_SITES` stays seven; T-7 names it.
+> 3. **The boundary gains the tree bound, stored as the depth bound** ("whether
+>    the depth bound or the read budget stopped it"). `walk_depth_bounded`
+>    stores depth or tree: what it records is that the stored set stops short
+>    of a root, true at either. `migrate apply --json` reports
+>    `traceability.treeBounded` beside `depthBounded` and `budgetBounded`, and
+>    its `depthBounded` is true under the tree bound too. Which of the two
+>    stopped the walk is not persisted. For a fresh treeless clone and for one
+>    whose top one or two commits' trees were fetched,
+>    `test_a_treeless_clone_applies_recording_edges_only_from_commits_whose_trees_it_holds`
+>    holds the three report flags at true, true and false, and the stored
+>    `walk_depth_bounded` and `walk_budget_bounded` at 1 and 0. No DDL change,
+>    and `SCHEMA_VERSION` stays 5, by the `watchdog` agent's pre-ruling of
+>    2026-11-25: a column of its own changes schema v5's DDL before 0.6.0, and a
+>    v5 database already built would pass the exact-match open (F6) without it,
+>    so the column would take `SCHEMA_VERSION` 6. Decision 7's
+>    `recordedEdgesDepthBounded` reads this column and carries a pointer here.
+> 4. **The remedy in a promisor clone** (new: decision 2 names no remedy). A
+>    refusal at `rev-list`, `diff-tree` or `log` that would name `git fsck`
+>    names `git log --first-parent --name-status HEAD` instead. Run by a git
+>    allowed to fetch lazily, that command fetches the trees the walk will not:
+>    in
+>    `test_a_promisor_clone_walks_to_its_first_unreadable_tree_until_the_remedy_fetches_it`
+>    a four-commit treeless clone, under each promisor configuration the tests
+>    drive, walks no commit before it and all four after it. In
+>    `test_a_promisor_clone_s_exit_status_refusal_names_the_fetch_in_place_of_fsck`,
+>    a planted `rev-list` or `diff-tree` exit in the clone names it, the same
+>    `rev-list` exit in its origin, which promises nothing, names fsck, and a
+>    framing refusal keeps its own remedy. `rev-parse`, which runs before the
+>    promisor read, keeps fsck's.
+> 5. **A tree-bounded state's identity does not name its edge set** ("two
+>    states with one identity hold the same edges"; the edges "a function of
+>    the objects first-parent-reachable from the walk commit, the shallow list
+>    and those rules alone: no environment variable, no configuration at any
+>    level"; "then one identity would name two edge sets"; and 3(b)'s "a
+>    function of history alone"). The shallow boundary's digest is part of the
+>    identity; the tree bound carries no digest and is published as the depth
+>    bound. So two tree-bounded states at one walk commit hold different edges
+>    when different trees are local. Measured with git 2.56.0 at
+>    `e006d9b2`, a commit on the branch of #1105, by the first block below: one treeless
+>    clone of a five-commit history, three of its commits carrying a `Refs:`
+>    trailer, applied once `git log` had fetched the top commit's trees and
+>    again once it had fetched the top two's, printed one `stateHash`, one
+>    `walkCommit`, `depthBounded` true, `budgetBounded` false, `treeBounded`
+>    true and null digests both times, and 1 edge, then 2. Whether an exit 128
+>    bounds or refuses depends on configuration too: on item 2's promisor keys,
+>    `remote.<name>.promisor` in any scope. Measured on the same commit: a repository with no remote,
+>    its walk commit's parent tree deleted, refused at diff-tree with the fsck
+>    remedy, exit 4; with `remote.x.promisor = true` written to
+>    `$HOME/.gitconfig`, the same apply exited 0 with 0 edges and `treeBounded`
+>    true, so `HOME`, an environment variable, reaches it as well. The rest
+>    stands: a capped or bounded state still never shares an identity with one
+>    that was not, and the claims hold as written for a state whose stored
+>    boundary is not depth-bounded. A depth-bounded record may be tree-bounded
+>    and cannot say which. 3(b)'s reason holds too: the tree bound reads the
+>    clone's objects and git configuration, never a canonical row, so the edge
+>    table still cannot vary with withheld content. The same narrowing reaches
+>    item 3 of the amendment above ("a function of the walk commit, the
+>    boundary and the collector's rules"), left as written since this block
+>    follows it, ADR-0016 Amendment 1's "two states with one identity hold the
+>    same edges" and NFR-5's "one identity holds one edge set", which carry
+>    pointers here.
+> 6. **Nothing consumes identity equality today.** Every apply re-collects the
+>    walk and replaces the whole edge set (decision 2), and nothing under `src`
+>    reads the walk record back: the walk columns other than `walk_commit` are
+>    named there only by the DDL and `record_walk`'s `UPDATE`, and the one
+>    `SELECT` from `schema_metadata` reads `schema_version` (the second block
+>    below). The first reader will be
+>    [#1034](https://github.com/theurian/theurian/issues/1034)'s
+>    `knowledge.trace`, which must treat a depth-bounded identity as not naming
+>    its edge set, since every tree-bounded state has one. Recorded rather than
+>    closed, by the `watchdog` agent's ruling of 2026-11-25. Rejected:
+>    persisting a value that tells two tree-bounded states apart, a DDL change
+>    before 0.6.0 against item 3's pre-ruling; and refusing a tree-bounded
+>    apply, which is #1103 itself.
+>
+> Item 5's identity measurement, run in an empty scratch directory with `HOME`,
+> `THEURIAN_DATA_DIR` and `TMPDIR` inside it and git's author and committer
+> set. Its two lines differ only in `edges`:
+>
+> ```sh
+> git init -q -b main src && echo a > src/a && git -C src add a && git -C src commit -qm init
+> (cd src && theurian init --json > /dev/null) && git -C src add -A && git -C src commit -qm theurian
+> for i in 1 2 3; do mkdir src/d$i && echo $i > src/d$i/f.py && git -C src add -A &&
+>   git -C src commit -qm c$i -m "Refs: architecture.x$i"; done
+> git -C src config uploadpack.allowFilter true
+> git clone -q --filter=tree:0 "file://$PWD/src" tl
+> for k in 1 2; do git -C tl log --first-parent --name-status --max-count=$k HEAD > /dev/null
+>   (cd tl && theurian migrate apply --json) |
+>     python3 -c 'import json, sys; p = json.load(sys.stdin); t = p["traceability"]; t.pop("commits"); print(p["stateHash"][:16], t)'
+> done
+> ```
+>
+> Item 6's keys, from the repository root. The first prints `record_walk`'s two
+> `UPDATE` lines, the second the one `schema_version` read:
+>
+> ```sh
+> git grep -n -E 'walk_(shallow_digest|depth_bounded|budget_bounded|capped_digest)' -- packages/theurian-core/src ':!*/sqlite/schema.py'
+> git grep -n 'FROM schema_metadata' -- packages/theurian-core/src
+> ```
 
 ## Consequences
 

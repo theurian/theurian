@@ -46,8 +46,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `knowledge.trace` is [#1034](https://github.com/theurian/theurian/issues/1034),
   and `system.capabilities` still reports `traceability: false`.
   - **`migrate apply --json` gains a `traceability` key**: `walkCommit`,
-    `edges`, `shallowDigest`, `depthBounded`, `budgetBounded`, `cappedDigest`
-    and `commits`. `commits` lists only a commit with something to report, as
+    `edges`, `shallowDigest`, `depthBounded`, `budgetBounded`, `treeBounded`,
+    `cappedDigest` and `commits`. `commits` lists only a commit with something to report, as
     its `sha` with `refused`, `capped`, `undecodable`, `undated` and
     `absentItems`, the count of its edges naming no item in the state built.
     The text output prints the first 20 as one line each, the sha followed by
@@ -204,6 +204,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   corrected in place.
 
 ### Fixed
+
+- **`theurian migrate apply` applies on a treeless partial clone again**
+  ([#1103](https://github.com/theurian/theurian/issues/1103)). On a
+  `git clone --filter=tree:0` clone it exited 4 at `git diff-tree` with a
+  `git fsck` remedy that could not cure it, since fsck exits 0 there: a
+  regression against 0.5.3 that no release carried. In a promisor clone the
+  first commit whose trees the clone does not hold now bounds the edge walk:
+  the apply records edges from the commits before it, none on a fresh treeless
+  clone, and reports `treeBounded` and `depthBounded` true. The walk still
+  fetches nothing; a refusal there names
+  `git log --first-parent --name-status HEAD`, which does. A tree missing from a
+  repository that names no promisor remote still refuses with the fsck remedy.
 
 - **The recorded remote URL no longer carries credentials**
   ([#1061](https://github.com/theurian/theurian/issues/1061)). `repository_url`

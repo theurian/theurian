@@ -194,7 +194,11 @@ Still owed, with the milestone that will satisfy it:
 > `migrate apply` also writes traceability edges from `HEAD`'s first-parent
 > history, and a state's identity is (`state_hash`, walk commit, boundary),
 > recorded in `schema_metadata`: the hash names the canonical state, and two
-> states with one identity hold the same edges. *Positive*'s "The database key
+> states with one identity hold the same edges. *Amended 2026-11-25: not for a
+> tree-bounded state, whose identity does not name its edge set
+> ([ADR-0040](0040-traceability-representation-and-edge-sources.md), "Amended
+> 2026-11-25 — decision 2's tree bound in a promisor clone", item 5).*
+> *Positive*'s "The database key
 > always describes the database contents" holds for the canonical state;
 > between a commit and the next apply, the edges describe the walk commit, not
 > `HEAD`.

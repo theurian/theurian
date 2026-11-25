@@ -2101,7 +2101,12 @@ other's blind spots.
   context reads in `cli/context.py`; the service runner in
   `infrastructure/services/runner.py`; since ADR-0040 decision 2's walk landed,
   `infrastructure/git/first_parent_walk.py`, which runs `rev-parse`, `rev-list`,
-  `diff-tree` and `log` to read first-parent history at `HEAD`; since ADR-0029's
+  `diff-tree` and `log` to read first-parent history at `HEAD`, and, since
+  [#1103](https://github.com/theurian/theurian/issues/1103), `config` once or
+  twice before `rev-list`, asking whether any `remote.<name>.promisor` is true
+  or, failing that, whether the repository's own config sets
+  `extensions.partialclone`, so that a tree a partial clone does not hold bounds
+  the walk instead of refusing it (ADR-0040, amended 2026-11-25); since ADR-0029's
   trailer source landed, `infrastructure/git/trailer_source.py`, which runs
   `git log` over the pinned
   `refs/remotes/origin/main` to read `Review-Finding:` trailers; and, since
