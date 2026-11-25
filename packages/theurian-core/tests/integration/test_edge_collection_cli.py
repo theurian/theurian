@@ -546,3 +546,13 @@ def test_the_walk_record_and_the_report_are_what_the_walk_returned(
     assert tuple(report[k] for k in _REPORTED) == record
     assert report["edges"] == len(_rows(project, EDGES)) == (32 if walked else 0)
     assert text == (flagged if walked else [])
+
+
+def test_the_absent_item_count_is_attributed_to_each_commit(project: Path) -> None:
+    """C-M1 (#1097 R1): ADR-0040 3(b)'s count is per commit, so unequal counts must not pool."""
+    one = _commit(project, "a.py", f"a\n\nRefs: {NEVER}\n")
+    two = _commit(project, "b.py", f"b\n\nRefs: {NEVER}\nRefs: {NEVER}-2\n")
+
+    commits = _apply()[1]["traceability"]["commits"]
+
+    assert [(row["sha"], row["absentItems"]) for row in commits] == [(two, 2), (one, 1)]
