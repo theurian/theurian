@@ -1201,7 +1201,8 @@ refusal for `init`; a repository with no commit is the `unborn` case above.
 
 Still owed, with the issue or slice that will satisfy it:
 
-1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
+1. **Discharged with #1092, #1097 and #1098, as recorded above.**
+   **[#1033](https://github.com/theurian/theurian/issues/1033), edge
    collection:** the collector of decisions 2 and 3 with the build report of
    3(a) to 3(c); schema v5 (decision 4); the SQLite adapter for both port
    methods; tests for determinism at one `HEAD`, each of decision 2's levers
