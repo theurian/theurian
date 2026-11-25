@@ -115,3 +115,37 @@ def test_a_foreign_projects_edge_between_the_same_endpoints_is_not_returned_unde
 
     assert theirs == (foreign,), "the foreign edge is written, and its own project reads it"
     assert ours == (mine,)
+
+
+#: Each id is a wildcard, a case variant, a prefix or a substring of another's, and
+#: `svc_auth` is all of those to some other member.
+_AWKWARD_IDS = (
+    "svc_auth",
+    "svcXauth",  # LIKE's `_` matches this
+    "svc%",  # LIKE's `%`, and a prefix of every other `svc` id
+    "SVC_AUTH",  # case-insensitive equal of `svc_auth`
+    "svc_auth_v2",  # `svc_auth` is its prefix
+    "lib/svc_auth",  # contains `svc_auth`
+    "svc*",  # GLOB metacharacters from here
+    "svc?auth",
+    "svc[_]auth",
+    "svc",
+)
+
+
+@pytest.mark.parametrize("side", ["source", "target"])
+def test_an_endpoint_filter_matches_exactly_its_own_id_among_wildcard_case_and_prefix_ids(
+    database: Path, lock: Path, side: str
+) -> None:
+    """SEC-13: an id is data. A `LIKE`, `GLOB`, `NOCASE`, prefix, substring or ordered
+    comparison on it returns a neighbour's rows -- the edges of a different node."""
+    edges = tuple(_edge(n, _code(i), _test(i)) for n, i in enumerate(_AWKWARD_IDS))
+    make = _code if side == "source" else _test
+
+    with _store(database, lock, *edges) as store:
+        context = RequestContext(project_id=PROJECT)
+        answers = {
+            i: store.list_traceability_edges(context, **{side: make(i)}) for i in _AWKWARD_IDS
+        }
+
+    assert answers == {i: (edge,) for i, edge in zip(_AWKWARD_IDS, edges, strict=True)}
