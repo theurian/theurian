@@ -301,12 +301,12 @@ not; **absent** — effectively nothing.
   entity, and a notably complete design in
   [`docs/architecture/traceability.md`](architecture/traceability.md):
   non-foreign-key `TraceNode` references, per-edge evidence and confidence, drift
-  conditions D1–D7, five edge sources. **What is missing is the collection path
-  and the query surface** (`traceability: false`). The table is declared and
-  unpopulated —
-  `tests/integration/test_canonical_store_corruption.py` names
-  `traceability_edges` in its `UNPOPULATED_TABLES` set, and the
-  `system.capabilities` test states that
+  conditions D1–D7, five edge sources. **What is missing is the query surface**
+  (`traceability: false`). Since [#1097](https://github.com/theurian/theurian/pull/1097)
+  every `theurian migrate apply` fills the table from `Refs:` commit trailers
+  ([ADR-0040](adr/0040-traceability-representation-and-edge-sources.md) decisions
+  1–3), and the corruption test's `UNPOPULATED_TABLES` set is empty. No tool
+  reads the table: the `system.capabilities` test states that
   `CanonicalStore.list_traceability_edges` "is declared on the port and called
   from nowhere in `src/`".
 - **Temporal validity** — the primitives are there, but (a) status transitions

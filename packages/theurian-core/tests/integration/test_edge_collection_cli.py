@@ -8,6 +8,7 @@ with ``sqlite3``, never through the adapter that wrote them.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import sqlite3
@@ -16,6 +17,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -26,6 +28,7 @@ from typer.testing import CliRunner, Result
 
 from theurian.cli import commands
 from theurian.cli.main import app
+from theurian.domain.refs_trailer import capped_digest
 from theurian.infrastructure.git import first_parent_walk as walking
 from theurian.infrastructure.git.first_parent_walk import FirstParentWalk, GitWalkRefusedError
 from theurian.infrastructure.sqlite.store import SqliteWriter
@@ -40,6 +43,11 @@ EDGES: Final = (
     "SELECT source_commit, source_type, source_id, target_type, target_id "
     "FROM traceability_edges ORDER BY 1, 3, 5"
 )
+_RECORD: Final = (
+    "SELECT walk_commit, walk_shallow_digest, walk_depth_bounded, walk_budget_bounded, "
+    "walk_capped_digest FROM schema_metadata"
+)
+_REPORTED: Final = ("walkCommit", "shallowDigest", "depthBounded", "budgetBounded", "cappedDigest")
 _MARK: Final = "echo-marker-7f3"
 #: C2-3's refused shapes (``test_refs_trailer.py``'s ``_HOSTILE``), as one commit's trailers.
 _REFUSED: Final = (
@@ -91,6 +99,10 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "add the migration", extra_env=_DATED)
     return root
+
+
+def _refs(ids: Sequence[str]) -> bytes:
+    return "".join(f"Refs: {i}\n" for i in ids).encode()
 
 
 def _commit(root: Path, path: str, message: str) -> str:
@@ -210,6 +222,8 @@ def test_a_withheld_item_and_one_never_held_differ_only_in_the_absent_item_count
 ) -> None:
     """ADR-0040 3(b) (D10): one walk over two corpora, :data:`ITEM` withheld in one and never held
     in the other, gives one edge set and one report but the absent-item count, which is a count.
+    "Only" holds for this shape: the commit names :data:`NEVER` too, so both reports list it; one
+    naming :data:`ITEM` alone is listed only where it was never held (adv L3, #1097 R1).
 
     The migrations stay uncommitted, so the two repositories hold one commit byte for byte and
     the rows, edge ids included, compare whole.
@@ -320,12 +334,22 @@ _REFUSALS: Final[dict[str, tuple[str, Callable[[pytest.MonkeyPatch, Path], objec
 }
 
 
+def _digests(state: Path) -> dict[Path, str]:
+    return {
+        path.relative_to(state): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in state.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("populated", [False, True], ids=["fresh", "populated"])
 @pytest.mark.parametrize("kind", sorted(_REFUSALS))
 def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
-    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, populated: bool
 ) -> None:
-    """ADR-0040 decision 2 (D12): the walk refuses before the lock, so nothing is built, and the
-    caller gets its text and remedy and never its cause, which can name a path (#1092 R1 LOW-1).
+    """ADR-0040 decision 2 (D12): the walk refuses before the lock, so nothing is written, and
+    the caller gets its text and remedy and never its cause, which can name a path (#1092 R1
+    LOW-1). A populated state is compared by content, ``active.json`` included (A-M4).
     """
     fragment, plant = _REFUSALS[kind]
     caught: list[GitWalkRefusedError] = []
@@ -340,10 +364,12 @@ def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
                 caught.append(exc)
                 raise
 
-    monkeypatch.setattr(commands, "walk_first_parent", planted)
     _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    if populated:
+        assert _apply()[0].exit_code == 0
+    monkeypatch.setattr(commands, "walk_first_parent", planted)
     state = project / ".theurian/state"
-    before = sorted(state.iterdir())
+    before = _digests(state)
 
     result, payload = _apply()
     plain = runner.invoke(app, ["migrate", "apply"])
@@ -353,7 +379,8 @@ def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
     assert (result.exit_code, plain.exit_code) == (4, 4)
     assert payload == {"error": str(first), "remedy": first.remedy}
     assert plain.stderr == f"error: {second}\n{second.remedy}\n"
-    assert sorted(state.iterdir()) == before
+    assert _digests(state) == before
+    assert ("active.json" in {p.name for p in before}) == populated
     causes = [str(exc.__cause__) for exc in caught if exc.__cause__ is not None]
     assert len(causes) == (2 if kind in {"shallow-unreadable", "stage"} else 0)
     assert all(str(project.name) in cause for cause in causes)
@@ -448,3 +475,131 @@ def test_a_path_listed_twice_in_one_commit_gives_one_edge(
 
     assert result.exit_code == 0, payload
     assert _rows(project, EDGES) == [(head, "code", "a.py", "knowledge", ITEM)]
+
+
+def test_an_apply_after_a_project_id_change_replaces_the_whole_edge_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C-H1 (#1097 R1, HIGH): the state hash omits the project id, so the renamed project's apply
+    reuses the database holding the old id's edges. A replace scoped to the applying project
+    exited 4 on ``edge_id``; an ``INSERT OR IGNORE`` one exits 0 and keeps the old rows (#1099).
+    """
+    root = _project(tmp_path, monkeypatch, item=False)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "init", extra_env=_DATED)
+    _commit(root, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    first, before = _apply()
+    renamed = runner.invoke(app, ["project", "register", "--project-id", "renamed"])
+
+    second, after = _apply()
+
+    assert (first.exit_code, renamed.exit_code, second.exit_code) == (0, 0, 0), after
+    assert after["traceability"] == before["traceability"]
+    assert _rows(root, "SELECT project_id, source_id FROM traceability_edges") == [
+        ("renamed", "a.py")
+    ]
+
+
+def _listed(stdout: str) -> list[str]:
+    """The text form's flagged commits: the last list, under ``traceability``."""
+    return [line.removeprefix("    - ") for line in stdout.split("  commits:\n")[1].splitlines()]
+
+
+def test_the_text_form_lists_twenty_flagged_commits_and_counts_the_rest(project: Path) -> None:
+    """Adv L4 (#1097 R1, adopted): under GitHub's ``Refs: #N`` every commit is refused and
+    flagged, and the text form printed a line for each, up to 10,000; ``--json`` keeps them all.
+    """
+
+    shas: list[str] = []
+
+    def apply_after(numbers: range) -> list[str]:
+        shas.extend(_commit(project, f"f{n}.py", f"fix {n}\n\nRefs: #{n}\n") for n in numbers)
+        return _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+
+    def rows(count: int) -> list[str]:
+        return [f"{sha} refused=1" for sha in reversed(shas[:count])]
+
+    at_cap = apply_after(range(20))
+    over = apply_after(range(20, 21))
+    well_over = apply_after(range(21, 41))
+    payload = _apply()[1]
+
+    assert at_cap == rows(20)
+    assert over == [*rows(21)[:20], "\u2026 and 1 more; see --json"]
+    assert well_over == [*rows(41)[:20], "\u2026 and 21 more; see --json"]
+    assert [row["sha"] for row in payload["traceability"]["commits"]] == list(reversed(shas))
+
+
+_A, _B, _C, _D = (c * 40 for c in "abcd")
+#: 32 distinct ids, 31 never held: one under 3(c)'s cap, and one more over it.
+_IDS: Final = [ITEM, NEVER, *(f"architecture.n{n}" for n in range(30))]
+_AT: Final = datetime(2026, 1, 1, tzinfo=UTC)
+_WALKED: Final = (
+    walking.WalkedCommit(_A, _AT, ("a.py",), _refs(_IDS)),
+    walking.WalkedCommit(_B, _AT, None, b"Refs: BAD\n"),
+    walking.WalkedCommit(_C, _AT, ("c.py",), _refs([*_IDS, "x.y"])),
+    walking.WalkedCommit(_D, None, ("d.py",), _refs([ITEM])),
+)
+_BOUNDARIES: Final = {
+    "unborn": FirstParentWalk(None, (), None, depth_bounded=False, budget_bounded=False),
+    "depth": FirstParentWalk(_A, _WALKED, "e" * 64, depth_bounded=True, budget_bounded=False),
+    "budget": FirstParentWalk(_A, _WALKED, None, depth_bounded=False, budget_bounded=True),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BOUNDARIES))
+def test_the_walk_record_and_the_report_are_what_the_walk_returned(
+    project: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A-M3 (#1097 R1): ADR-0040 decisions 2-4's record, flags, edge count and text form, held
+    with the walk stubbed; the walk's own bounds are ``test_first_parent_walk.py``'s."""
+    walk = _BOUNDARIES[case]
+    monkeypatch.setattr(commands, "walk_first_parent", lambda _: walk)
+
+    result, payload = _apply()
+    text = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+
+    walked = walk.walk_commit is not None
+    bounds = (walk.depth_bounded, walk.budget_bounded) if walked else (None, None)
+    capped = capped_digest([_B, _C] if walked else [])
+    record = (walk.walk_commit, walk.shallow_digest, *bounds, capped)
+    flagged = [f"{_A} absentItems=31", f"{_B} refused=1 capped", f"{_C} capped", f"{_D} undated"]
+    report = payload["traceability"]
+    assert result.exit_code == 0, payload
+    assert _rows(project, _RECORD) == [record]
+    assert tuple(report[k] for k in _REPORTED) == record
+    assert report["edges"] == len(_rows(project, EDGES)) == (32 if walked else 0)
+    assert text == (flagged if walked else [])
+
+
+def test_the_absent_item_count_is_attributed_to_each_commit(project: Path) -> None:
+    """C-M1 (#1097 R1): ADR-0040 3(b)'s count is per commit, so unequal counts must not pool,
+    and it counts edges naming no item, not distinct absent ids: two ids on two paths is 4.
+    """
+    one = _commit(project, "a.py", f"a\n\nRefs: {NEVER}\n")
+    two = _commit(project, "b.py", f"b\n\nRefs: {NEVER}\nRefs: {NEVER}-2\n")
+    (project / "x.py").write_text("x")
+    (project / "y.py").write_text("y")
+    git(project, "add", "x.py", "y.py")
+    git(project, "commit", "-q", "-m", f"xy\n\nRefs: {NEVER}\nRefs: {NEVER}-2\n", extra_env=_DATED)
+    paths = git(project, "rev-parse", "HEAD").strip()
+
+    commits = _apply()[1]["traceability"]["commits"]
+
+    assert [(row["sha"], row["absentItems"]) for row in commits] == [(paths, 4), (two, 2), (one, 1)]
+
+
+def test_a_rename_commit_records_an_edge_for_both_paths(project: Path) -> None:
+    """A-M5 (#1097 R1): ADR-0040 decision 2's ``--no-renames``. A detected rename made the
+    diff-tree reader refuse every apply with a rename in its history."""
+    _commit(project, "a.py", "plain\n")
+    git(project, "mv", "a.py", "b.py")
+    git(project, "commit", "-q", "-m", f"rename\n\nRefs: {ITEM}\n", extra_env=_DATED)
+    head = git(project, "rev-parse", "HEAD").strip()
+
+    result, payload = _apply()
+
+    assert result.exit_code == 0, payload
+    assert _rows(project, EDGES) == [
+        (head, "code", path, "knowledge", ITEM) for path in ("a.py", "b.py")
+    ]

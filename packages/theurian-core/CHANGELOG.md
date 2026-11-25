@@ -37,6 +37,37 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
+- **Every `theurian migrate apply` collects traceability edges from `Refs:`
+  commit trailers** ([#1033](https://github.com/theurian/theurian/issues/1033);
+  ADR-0040 decisions 1–3). A line `Refs: <item id>` at column 0 of a commit
+  message on the first-parent history of `HEAD` records one edge from each path
+  that commit changed to that item. Every apply, one with nothing pending
+  included, replaces the whole edge set. Nothing reads the edges yet:
+  `knowledge.trace` is [#1034](https://github.com/theurian/theurian/issues/1034),
+  and `system.capabilities` still reports `traceability: false`.
+  - **`migrate apply --json` gains a `traceability` key**: `walkCommit`,
+    `edges`, `shallowDigest`, `depthBounded`, `budgetBounded`, `cappedDigest`
+    and `commits`. `commits` lists only a commit with something to report, as
+    its `sha` with `refused`, `capped`, `undecodable`, `undated` and
+    `absentItems`, the count of its edges naming no item in the state built.
+    The text output prints the first 20 as one line each, the sha followed by
+    its non-zero counts and set flags (`<sha> refused=1 absentItems=5`), then
+    one `… and K more; see --json` line for the rest. No output prints a
+    trailer value, a commit message byte or an item id.
+  - **A walk git cannot answer refuses the apply**, exit 4, before the write
+    lock is taken and with nothing written, printing the walk's own reason and
+    remedy. A malformed shallow file, for example, prints "Run 'git rev-parse
+    --git-path shallow' in the project's repository and rewrite the file it
+    names to one lowercase object id per line, then retry."
+  - **The cost.** The walk runs before the write lock and the edge replace
+    inside it, measured at 7.4 ms for 5 edges, 1.006 s for 50,000 and 12.99 s
+    for 320,000; about 130 s at the 3,200,000-edge budget is a linear
+    extrapolation. Above about 740k edges another writer waiting on the lock,
+    such as a second apply, gets `WriteLockTimeoutError` after 30 s; its remedy
+    is to wait and retry.
+  - `MIGRATION_ENGINE_VERSION` does not move: no released Core collected edges,
+    and `SCHEMA_VERSION` 5, below, already rebuilds every state.
+
 - **A generated candidate's proposal records where it came from**
   ([#754](https://github.com/theurian/theurian/issues/754)). `evidence.json`
   gains a `candidate` object holding the gate's inputs: `repository`,

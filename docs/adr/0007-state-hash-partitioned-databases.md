@@ -23,6 +23,16 @@ A single database would have to mutate on every checkout. That produces:
 **Content-address the entire canonical state, and keep one database per distinct
 state.**
 
+> **Amended 2026-11-24, by [ADR-0040](0040-traceability-representation-and-edge-sources.md)
+> ([#1033](https://github.com/theurian/theurian/issues/1033)).** The
+> content-addressed state is no longer the whole database: `traceability_edges`
+> and `schema_metadata`'s `walk_*` record are derived state, which every
+> `migrate apply` replaces from a first-parent walk at `HEAD` and which the hash
+> does not read. One `state_hash` still names one canonical state; a state's
+> identity is (`state_hash`, walk commit, boundary), and an apply into a built
+> state still pays the walk and the edge replace (ADR-0040 decision 2, NFR-5,
+> NFR-6). The `watchdog` agent ruled the edges derived on 2026-11-04.
+
 ```text
 state_hash = SHA256(
     sorted migration IDs

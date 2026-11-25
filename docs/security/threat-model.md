@@ -4769,8 +4769,18 @@ breakdown it had already read.
 **One apply re-records and another deliberately does not; the residual is the
 honest half of that choice.** `migrate apply` records only when it created the
 database or applied a migration (`created or report.changed`). An apply with
-nothing pending writes nothing and must not re-record, because it is step one of
-the remedy this very signal publishes: re-recording there would take the count
+nothing pending replaces its edges and walk record, re-registers the project, whose
+`last_seen_commit` follows `HEAD`, re-records the state hash in the build provenance,
+and rewrites the whole pointer from the migration set, so on a healthy pointer only
+`updatedAt` moves. For one project, both counts depend only on that pointer — its
+`databaseFilename` names the store both comparisons count over and its
+`migrationCount` is one side of the first, both derived from the checked-out
+migration set and the schema version, never from the database — and on that store's
+`migration_history`, `knowledge_items` and `project_integrity` rows, none of which
+such an apply writes; so it can clear either signal only by replacing a damaged
+pointer with one derived from source. Such an apply
+must not re-record the expected count, because it is step one of the remedy this very
+signal publishes: re-recording there would take the count
 *from the damaged state* and clear the signal while the damage stood — the remedy
 manufacturing its own all-clear. Both directions are pinned
 (`test_an_apply_that_changes_the_store_records_the_new_count`,

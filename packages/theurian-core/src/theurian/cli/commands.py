@@ -2973,16 +2973,25 @@ def _purge_fields(purge: WithdrawalPurge) -> dict[str, object]:
     }
 
 
+# Adv L4: 523 stdout lines for 500 flagged commits; 20 keeps 10,000 on one screen.
+_TRACEABILITY_TEXT_COMMIT_CAP = 20
+
+
 def _traceability_fields(
     collection: EdgeCollection | None, *, as_json: bool
 ) -> dict[str, object] | None:
     """The edge walk this apply recorded, for its payload: shas, counts and flags, no values.
 
     Only commits with a count or a flag are listed: every walked commit would put up to
-    10,000 rows into every apply's output, and ADR-0040 3(a) and 3(c) ask only for those.
+    10,000 rows into every apply's output, and ADR-0040 3(a) and 3(c) ask only for those;
+    the text form lists the first 20 of them and counts the rest.
     """
     if collection is None:
         return None
+    commits = [_traceability_commit(commit, as_json=as_json) for commit in collection.commits]
+    if not as_json and len(commits) > _TRACEABILITY_TEXT_COMMIT_CAP:
+        more = len(commits) - _TRACEABILITY_TEXT_COMMIT_CAP
+        commits = [*commits[:_TRACEABILITY_TEXT_COMMIT_CAP], f"\u2026 and {more} more; see --json"]
     return {
         "walkCommit": collection.walk_commit,
         "edges": collection.edges,
@@ -2990,7 +2999,7 @@ def _traceability_fields(
         "depthBounded": collection.depth_bounded,
         "budgetBounded": collection.budget_bounded,
         "cappedDigest": collection.capped_digest,
-        "commits": [_traceability_commit(commit, as_json=as_json) for commit in collection.commits],
+        "commits": commits,
     }
 
 

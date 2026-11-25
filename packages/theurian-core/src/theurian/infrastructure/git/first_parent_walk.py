@@ -1,6 +1,6 @@
 """First-parent history at ``HEAD``, read for traceability collection (ADR-0040 decision 2).
 
-No caller yet: #1033's C2-4 wires it into ``migrate apply``. Every read is plumbing over the
+Its one caller is ``migrate apply``, before the write lock. Every read is plumbing over the
 one OID ``HEAD`` resolved to, under #1012's environment and argv prefix plus decision 2's
 flags; ``test_first_parent_walk.py`` drives each lever decision 2 names and shows it moving an
 unhardened read but not this one. A git that fails, outlives :data:`GIT_TIMEOUT_SECONDS` or

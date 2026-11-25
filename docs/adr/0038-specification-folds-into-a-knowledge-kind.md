@@ -467,3 +467,19 @@ Still owed, with the issue or slice that will satisfy it:
 > each method is defined in the port and in `store.py` only, and no file but
 > `packages/theurian-core/tests/integration/test_canonical_store.py` spells
 > either one as an attribute, a bare name or a whole string constant.
+
+## Amendment 4 — edges exist, and the port's two methods still have no caller (2026-11-24, ADR-0040, #1033)
+
+> **This is an append-only amendment.** Amendment 3 says "No edge exists yet"
+> still holds, as *Context* does, and *Neutral* says `UNPOPULATED_TABLES`
+> excludes `traceability_edges`. Both were true when measured and are not now.
+> Since [#1097](https://github.com/theurian/theurian/pull/1097) every
+> `migrate apply` writes the project's edges through
+> `SqliteWriter.replace_traceability_edges`, called from
+> `cli/migration_pipeline.py` with `record_walk` and
+> `count_edges_naming_no_item`, and `UNPOPULATED_TABLES` is empty. None of the
+> three is on the port, so "No caller" still holds for `add_traceability_edge`
+> and `list_traceability_edges`. Amendment 3's pin, renamed in #1097, is
+> `test_the_traceability_edge_methods_are_referenced_by_the_collector_and_tests_alone`:
+> it holds the same two sets for the port's methods, and admits
+> `cli/migration_pipeline.py` and one named test file for each new one.
