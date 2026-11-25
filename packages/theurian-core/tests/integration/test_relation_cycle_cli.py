@@ -14,12 +14,15 @@ from __future__ import annotations
 import ast
 import json
 import sqlite3
+import sys
+import tempfile
 from contextlib import closing
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 from adr_0039_support import SRC, _named, _scoped
+from git_isolation_fixtures import git
 from label_inheritance_support import (
     ITEM_ID,
     cli,
@@ -28,6 +31,9 @@ from label_inheritance_support import (
     landing_zone,
     proposals_tree,
 )
+
+from theurian.cli import migration_pipeline
+from theurian.domain.specification import EdgeCollection
 
 pytestmark = pytest.mark.integration
 
@@ -333,3 +339,55 @@ def test_no_mcp_service_is_wired_to_a_replay_that_raises_relation_cycle_error() 
 
     assert rehearsals == ["_accept_is_unreachable"]
     assert spelled.isdisjoint({*PIPELINE, "migration_pipeline"})
+
+
+def test_every_apply_migration_set_call_under_src_passes_its_walk() -> None:
+    """D4: ``walk`` defaults to ``None``, so ``migrate apply`` dropping it would record a null
+    walk and no edges with nothing refusing. Key: every call by that name under ``src``."""
+    walks = sorted(
+        (
+            path.relative_to(SRC).as_posix(),
+            scope,
+            next((ast.unparse(k.value) for k in node.keywords if k.arg == "walk"), "<default>"),
+        )
+        for path in sorted(SRC.rglob("*.py"))
+        for node, scope in _scoped(ast.parse(path.read_bytes()))
+        if isinstance(node, ast.Call) and _named(node.func) == "apply_migration_set"
+    )
+
+    assert walks == [
+        ("cli/commands.py", "migrate_apply", "walk"),
+        ("cli/migration_pipeline.py", "current_item_in", "None"),
+        ("cli/migration_pipeline.py", "permissive_moves_in", "None"),
+        ("cli/migration_pipeline.py", "rehearse_migration_set", "None"),
+    ]
+
+
+def test_no_replay_walks_with_tmpdir_inside_a_clone_or_outside_any_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0040 decision 2 (D4): a replay's copy is no working tree, and git run in a TMPDIR
+    inside a clone reads that clone. Key: the replays :data:`SITES` names."""
+    project = labelled_project(tmp_path, monkeypatch)
+    git(project.root, "commit", "-q", "--allow-empty", "-m", f"x\n\nRefs: {ITEM_ID}")
+    scratches = (project.root / "tmp", tmp_path / "outside")
+    seen: set[tuple[str, str, EdgeCollection | None]] = set()
+    apply = migration_pipeline.apply_migration_set
+
+    def spied(**arguments: Any) -> Any:
+        report = apply(**arguments)
+        seen.add((tempfile.gettempdir(), sys._getframe(1).f_code.co_name, report.traceability))
+        return report
+
+    monkeypatch.setattr(migration_pipeline, "apply_migration_set", spied)
+    for n, scratch in enumerate(scratches):
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        assert cli("migrate", "validate")[0] == 0
+        assert cli_propose(project, ITEM_ID, "--expected-revision", project.revision_id)[0] == 0
+        drafted = cli_propose(project, f"architecture.new-item-{n}")[1]
+        assert cli("propose", "accept", drafted["proposalId"])[0] == 0, drafted
+
+    replays = {name for _, _, name in SITES} - {"apply_migration_set"}
+    null = EdgeCollection(None, 0, None, None, None, None, ())
+    assert seen == {(str(s), name, null) for s in scratches for name in replays}
