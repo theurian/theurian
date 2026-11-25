@@ -448,3 +448,26 @@ def test_a_path_listed_twice_in_one_commit_gives_one_edge(
 
     assert result.exit_code == 0, payload
     assert _rows(project, EDGES) == [(head, "code", "a.py", "knowledge", ITEM)]
+
+
+def test_an_apply_after_a_project_id_change_replaces_the_whole_edge_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C-H1 (#1097 R1, HIGH): the state hash omits the project id, so the renamed project's apply
+    reuses the database holding the old id's edges. A replace scoped to the applying project
+    exited 4 on ``edge_id``; an ``INSERT OR IGNORE`` one exits 0 and keeps the old rows (#1099).
+    """
+    root = _project(tmp_path, monkeypatch, item=False)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "init", extra_env=_DATED)
+    _commit(root, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    first, before = _apply()
+    renamed = runner.invoke(app, ["project", "register", "--project-id", "renamed"])
+
+    second, after = _apply()
+
+    assert (first.exit_code, renamed.exit_code, second.exit_code) == (0, 0, 0), after
+    assert after["traceability"] == before["traceability"]
+    assert _rows(root, "SELECT project_id, source_id FROM traceability_edges") == [
+        ("renamed", "a.py")
+    ]
