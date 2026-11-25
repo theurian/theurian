@@ -8,6 +8,7 @@ with ``sqlite3``, never through the adapter that wrote them.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import sqlite3
@@ -331,12 +332,22 @@ _REFUSALS: Final[dict[str, tuple[str, Callable[[pytest.MonkeyPatch, Path], objec
 }
 
 
+def _digests(state: Path) -> dict[Path, str]:
+    return {
+        path.relative_to(state): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in state.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("populated", [False, True], ids=["fresh", "populated"])
 @pytest.mark.parametrize("kind", sorted(_REFUSALS))
 def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
-    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, populated: bool
 ) -> None:
-    """ADR-0040 decision 2 (D12): the walk refuses before the lock, so nothing is built, and the
-    caller gets its text and remedy and never its cause, which can name a path (#1092 R1 LOW-1).
+    """ADR-0040 decision 2 (D12): the walk refuses before the lock, so nothing is written, and
+    the caller gets its text and remedy and never its cause, which can name a path (#1092 R1
+    LOW-1). A populated state is compared by content, ``active.json`` included (A-M4).
     """
     fragment, plant = _REFUSALS[kind]
     caught: list[GitWalkRefusedError] = []
@@ -351,10 +362,12 @@ def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
                 caught.append(exc)
                 raise
 
-    monkeypatch.setattr(commands, "walk_first_parent", planted)
     _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    if populated:
+        assert _apply()[0].exit_code == 0
+    monkeypatch.setattr(commands, "walk_first_parent", planted)
     state = project / ".theurian/state"
-    before = sorted(state.iterdir())
+    before = _digests(state)
 
     result, payload = _apply()
     plain = runner.invoke(app, ["migrate", "apply"])
@@ -364,7 +377,8 @@ def test_a_refusing_walk_prints_its_own_remedy_and_writes_no_state(
     assert (result.exit_code, plain.exit_code) == (4, 4)
     assert payload == {"error": str(first), "remedy": first.remedy}
     assert plain.stderr == f"error: {second}\n{second.remedy}\n"
-    assert sorted(state.iterdir()) == before
+    assert _digests(state) == before
+    assert ("active.json" in {p.name for p in before}) == populated
     causes = [str(exc.__cause__) for exc in caught if exc.__cause__ is not None]
     assert len(causes) == (2 if kind in {"shallow-unreadable", "stage"} else 0)
     assert all(str(project.name) in cause for cause in causes)
