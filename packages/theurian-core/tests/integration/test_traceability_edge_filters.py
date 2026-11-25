@@ -19,7 +19,6 @@ import pytest
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import RelationType, TraceNodeType
 from theurian.domain.identifiers import EdgeId, ProjectId
-from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.project import Project
 from theurian.domain.specification import TraceabilityEdge, TraceNode
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
@@ -30,14 +29,6 @@ pytestmark = pytest.mark.integration
 PROJECT = ProjectId("demo")
 OTHER_PROJECT = ProjectId("other-service")
 NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
-ANCHOR = SourceAnchor(
-    provider="git",
-    source_uri="git://demo/.theurian/knowledge/a.md",
-    commit_sha="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-    file_path=".theurian/knowledge/a.md",
-    line_start=1,
-    line_end=10,
-)
 
 
 @pytest.fixture
@@ -72,7 +63,7 @@ def _edge(
         source=source,
         relation_type=RelationType.RELATED_TO,
         target=target,
-        evidence=(ANCHOR,),
+        evidence=(),
         confidence=0.75,
         created_at=NOW,
         source_commit="c" * 40,
@@ -117,19 +108,19 @@ def test_a_foreign_projects_edge_between_the_same_endpoints_is_not_returned_unde
     assert ours == (mine,)
 
 
-#: Each id is a wildcard, a case variant, a prefix or a substring of another's, and
-#: `svc_auth` is all of those to some other member.
+#: Each id matches, or is matched by, another under a wildcard, case-folded, prefix or
+#: substring comparison.
 _AWKWARD_IDS = (
     "svc_auth",
     "svcXauth",  # LIKE's `_` matches this
-    "svc%",  # LIKE's `%`, and a prefix of every other `svc` id
+    "svc%",  # as a LIKE pattern, matches every other `svc` id
     "SVC_AUTH",  # case-insensitive equal of `svc_auth`
     "svc_auth_v2",  # `svc_auth` is its prefix
     "lib/svc_auth",  # contains `svc_auth`
+    "svc",  # a prefix of every other `svc` id
     "svc*",  # GLOB metacharacters from here
     "svc?auth",
     "svc[_]auth",
-    "svc",
 )
 
 
@@ -137,7 +128,7 @@ _AWKWARD_IDS = (
 def test_an_endpoint_filter_matches_exactly_its_own_id_among_wildcard_case_and_prefix_ids(
     database: Path, lock: Path, side: str
 ) -> None:
-    """SEC-13: an id is data. A `LIKE`, `GLOB`, `NOCASE`, prefix, substring or ordered
+    """An id is data. A `LIKE`, `GLOB`, `NOCASE`, prefix, substring or ordered
     comparison on it returns a neighbour's rows -- the edges of a different node."""
     edges = tuple(_edge(n, _code(i), _test(i)) for n, i in enumerate(_AWKWARD_IDS))
     make = _code if side == "source" else _test
@@ -155,7 +146,8 @@ def test_both_filters_return_the_intersection_where_either_alone_returns_more(
     database: Path, lock: Path
 ) -> None:
     """Each filter must constrain: `a -> t` is the only edge from `a` that is also to `t`.
-    The type-swapped `t -> a`-shaped row shares both ids and differs by type alone."""
+    `swapped` is `test:a -> code:t`: wanted's ids with the endpoint types exchanged, so only a
+    filter that compares types excludes it."""
     wanted = _edge(1, _code("a"), _test("t"))
     other_source = _edge(2, _code("b"), _test("t"))
     other_target = _edge(3, _code("a"), _test("u"))
@@ -163,6 +155,7 @@ def test_both_filters_return_the_intersection_where_either_alone_returns_more(
 
     with _store(database, lock, wanted, other_source, other_target, swapped) as store:
         context = RequestContext(project_id=PROJECT)
+        assert store.list_traceability_edges(context, source=_test("a")) == (swapped,)
         source_alone = store.list_traceability_edges(context, source=_code("a"))
         target_alone = store.list_traceability_edges(context, target=_test("t"))
         both = store.list_traceability_edges(context, source=_code("a"), target=_test("t"))
