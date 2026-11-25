@@ -31,12 +31,13 @@ one standing since #1033, the sentence it holds.
   ``## Amendment 1`` and is not read further (ADR-0039's Amendment 2 is in it), and
   every run of lines inserted before it opens with ``*Amended in Amendment`` and is
   indented throughout (an indented stray line beside a marker passes).
-- *The claims-pin bullet's counts* are this module's own ``STANDING.format`` and
-  ``DATED.format`` calls, read from its syntax tree: how many of the first, the
-  second's ``issue=`` values, and the ``F<n>`` labels its ``where=`` values spell.
+- *The claims-pin bullet's counts* are the ``STANDING.format`` and ``DATED.format``
+  calls of this module and of ``test_adr_0040_collection_claims.py``, read from their
+  syntax trees: how many of the first, the second's ``issue=`` values, and the ``F<n>``
+  labels its ``where=`` values spell.
 
-Decision 2's identity and digests and 3(c)'s cap have no fact side until #1033
-builds them.
+Decision 2's identity and shallow digest and 3(c)'s cap and capped digest have their
+fact sides in ``test_adr_0040_collection_claims.py``.
 """
 
 from __future__ import annotations
@@ -400,11 +401,15 @@ def test_ingest_imports_no_git_log_adapter_and_opens_no_state_database() -> None
 # --- Fact pin: the claims-pin bullet's counts --------------------------------
 
 
+_COUNTED: Final = (Path(__file__), Path(__file__).with_name("test_adr_0040_collection_claims.py"))
+
+
 def _format_calls(template: str) -> list[dict[str | None, ast.expr]]:
-    """The keywords of each ``template.format`` call in this module."""
+    """The keywords of each ``template.format`` call in the modules :data:`_COUNTED` names."""
     return [
         {keyword.arg: keyword.value for keyword in node.keywords}
-        for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8")))
+        for module in _COUNTED
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8")))
         if isinstance(node, ast.Call) and ast.unparse(node.func) == f"{template}.format"
     ]
 
@@ -415,7 +420,7 @@ def test_the_claims_pin_bullet_counts_this_modules_standing_and_dated_sites() ->
     named = {f for call in dated for f in re.findall(r"\bF\d+\b", ast.unparse(call["where"]))}
     bullet = "ADR-0040 Compliance's claims-pin bullet states these counts; update it with this pin"
 
-    assert len(_format_calls("STANDING")) == 5, bullet
+    assert len(_format_calls("STANDING")) == 9, bullet
     assert {ast.literal_eval(call["issue"]) for call in dated} == {1033}, bullet
     assert named == {"F10"}, bullet
 
@@ -544,7 +549,7 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
     ),
     "the claims pin's standing facts": (
         "## Compliance",
-        "Since #1033 the pin also holds five sentences outside *Context* as standing",
+        "Since #1033 the pin also holds nine sentences outside *Context* as standing",
     ),
     "the edge adapter's one source file": (
         "## Compliance",
@@ -785,7 +790,7 @@ FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
-AMENDED: Final[frozenset[int]] = frozenset({4, 6, *range(8, 21)})
+AMENDED: Final[frozenset[int]] = frozenset(range(4, 26))
 
 
 @pytest.mark.parametrize(
