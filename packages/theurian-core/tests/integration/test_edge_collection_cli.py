@@ -222,6 +222,8 @@ def test_a_withheld_item_and_one_never_held_differ_only_in_the_absent_item_count
 ) -> None:
     """ADR-0040 3(b) (D10): one walk over two corpora, :data:`ITEM` withheld in one and never held
     in the other, gives one edge set and one report but the absent-item count, which is a count.
+    "Only" holds for this shape: the commit names :data:`NEVER` too, so both reports list it; one
+    naming :data:`ITEM` alone is listed only where it was never held (adv L3, #1097 R1).
 
     The migrations stay uncommitted, so the two repositories hold one commit byte for byte and
     the rows, edge ids included, compare whole.
