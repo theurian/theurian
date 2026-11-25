@@ -136,6 +136,7 @@ class EdgeCollection:
     """What one apply's edge collection recorded (ADR-0040 decisions 2 and 3).
 
     The boundary is as ``schema_metadata`` holds it: null throughout without a walk commit.
+    ``tree_bounded`` is held there only as ``depth_bounded``, so it is named here alone.
     ``commits`` holds only those with a count or a flag, in walk order.
     """
 
@@ -144,6 +145,7 @@ class EdgeCollection:
     shallow_digest: str | None
     depth_bounded: bool | None
     budget_bounded: bool | None
+    tree_bounded: bool | None
     capped_digest: str | None
     commits: tuple[FlaggedCommit, ...]
 

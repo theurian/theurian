@@ -5,7 +5,9 @@ one OID ``HEAD`` resolved to, under #1012's environment and argv prefix plus dec
 flags; ``test_first_parent_walk.py`` drives each lever decision 2 names and shows it moving an
 unhardened read but not this one. A git that fails, outlives :data:`GIT_TIMEOUT_SECONDS` or
 prints a stream the framing cannot read refuses with :class:`GitWalkRefusedError`, never
-degrading to fewer commits. Each spawn's timeout is a deadline, not a wait for pipe EOF
+degrading to fewer commits -- except the promisor read, which answers no instead, and, in a
+promisor clone, diff-tree's exit 128, which is the tree bound (#1103).
+Each spawn's timeout is a deadline, not a wait for pipe EOF
 (#1092 round one): at it, git's process group and then git are killed and the walk refuses at
 once. A descendant that left the group is left running; holding stdout at the deadline, it is
 reported by that refusal. The binary is resolved to an absolute path on each call -- ADR-0030
@@ -78,15 +80,34 @@ _DIFF_TREE: Final = (
     "--always",
     "--ignore-submodules=none",
 )
+#: Whether git here would lazily fetch an absent object, as ``promisor-remote.c`` decides and its
+#: lazy fetch shows (measured, 2.56.0): any true ``remote.<name>.promisor`` in config as git reads
+#: it, includes and ``config.worktree`` too, or else an ``extensions.partialClone`` in the common
+#: directory's config file alone.
+_PROMISOR_REMOTE: Final = (
+    "config",
+    "--type=bool",
+    "-z",
+    "--get-regexp",
+    r"^remote\.(.*\.)?promisor$",
+)
+_PARTIAL_CLONE: Final = ("config", "--local", "-z", "--get", "extensions.partialclone")
 #: #1012's fields; ``tformat:`` terminates every record, so all three streams end on a separator.
 _LOG_FORMAT: Final = "--format=tformat:%H%x00%cI%x00%B"
 _LOG_FIELDS: Final = 3
 _HEX_LENGTHS: Final = {b"sha1": 40, b"sha256": 64}
 _CHUNK: Final = 1 << 16
+#: git's ``die()`` status, diff-tree's at a tree it cannot read.
+_DIED: Final = 128
 
 _INSTALL: Final = "Install git and put it on PATH so 'git --version' runs, then retry."
 _REPAIR: Final = (
     "Run 'git fsck' in the project's repository and repair what it reports, then retry."
+)
+#: ``_REPAIR`` in a promisor clone, whose fsck passes over an absent object the remote promises.
+_FETCH: Final = (
+    "Run 'git log --first-parent --name-status HEAD' in the project's repository so git fetches "
+    "from its promisor remote what this walk will not, repair what it reports, then retry."
 )
 _REPORT: Final = (
     "Run 'git --version' and report its output with this message: git printed a stream "
@@ -145,16 +166,17 @@ class FirstParentWalk:
     shallow_digest: str | None
     depth_bounded: bool
     budget_bounded: bool
+    tree_bounded: bool = False
 
     def __post_init__(self) -> None:
-        boundary = (self.shallow_digest, self.depth_bounded, self.budget_bounded)
-        if self.walk_commit is None and (self.commits or boundary != (None, False, False)):
+        boundary = (self.shallow_digest, self.depth_bounded, self.budget_bounded, self.tree_bounded)
+        if self.walk_commit is None and (self.commits or boundary != (None, False, False, False)):
             raise ValueError("a walk without a walk commit holds no commits and no boundary")
         if self.commits and self.commits[0].sha != self.walk_commit:
             raise ValueError("the walk commit must come first")
 
 
-_Bound = Literal["depth", "budget"] | None
+_Bound = Literal["depth", "budget", "tree"] | None
 
 _NOTHING: Final = FirstParentWalk(None, (), None, depth_bounded=False, budget_bounded=False)
 
@@ -173,12 +195,18 @@ def walk_first_parent(root: Path | None) -> FirstParentWalk:
     hex_length, shallow, walk_commit = _read_head(git, root)
     if walk_commit is None:
         return _NOTHING
+    promisor = _promisor(git, root)
     digest, boundary = _read_shallow(shallow, hex_length)
-    listed, spent, bound = _list_commits(git, root, walk_commit, hex_length, boundary)
-    paths, spent = _read_paths(git, root, listed, spent)
-    stamps = _read_messages(git, root, [sha for sha, _ in listed[: len(paths)]], spent)
+    try:
+        listed, spent, bound = _list_commits(git, root, walk_commit, hex_length, boundary)
+        paths, spent, tree = _read_paths(git, root, listed, spent, promisor=promisor)
+        stamps = _read_messages(git, root, [sha for sha, _ in listed[: len(paths)]], spent)
+    except GitWalkRefusedError as exc:
+        if promisor and exc.remedy == _REPAIR:
+            raise GitWalkRefusedError(exc.spawn, exc.reason, _FETCH) from exc
+        raise
     if len(stamps) < len(listed):
-        bound = "budget"
+        bound = "tree" if tree and len(stamps) == len(paths) else "budget"
     if _read_shallow(shallow, hex_length)[0] != digest:
         raise GitWalkRefusedError(
             "rev-parse",
@@ -196,6 +224,7 @@ def walk_first_parent(root: Path | None) -> FirstParentWalk:
         digest,
         depth_bounded=bound == "depth",
         budget_bounded=bound == "budget",
+        tree_bounded=bound == "tree",
     )
 
 
@@ -237,6 +266,22 @@ def _read_head(git: str, root: Path) -> tuple[int, Path, str | None]:
         raise _framing("rev-parse", "the object format is neither sha1 nor sha256")
     head = _oid(lines[3], hex_length, "rev-parse") if child.returncode == 0 else None
     return hex_length, root / os.fsdecode(lines[2]), head
+
+
+def _promisor(git: str, root: Path) -> bool:
+    """Whether the repository is a promisor clone; a read that fails, outlives its deadline or
+    ends inside a record answers no, so a tree diff-tree cannot read refuses rather than bounds.
+    """
+    try:
+        with _Child(git, root, _PROMISOR_REMOTE, allowed=(0, 1)) as child:
+            values = [token.rpartition(b"\n")[2] for token in child.tokens(b"\0")]
+        if b"true" in values:
+            return True
+        with _Child(git, root, _PARTIAL_CLONE, allowed=(0, 1)) as child:
+            list(child.tokens(b"\0"))
+    except GitWalkRefusedError:
+        return False
+    return child.returncode == 0
 
 
 def _read_shallow(path: Path, hex_length: int) -> tuple[str | None, frozenset[str]]:
@@ -300,22 +345,31 @@ def _list_commits(
 
 
 def _read_paths(
-    git: str, root: Path, listed: Sequence[tuple[str, str | None]], spent: Sequence[int]
-) -> tuple[list[tuple[str, ...] | None], list[int]]:
+    git: str,
+    root: Path,
+    listed: Sequence[tuple[str, str | None]],
+    spent: Sequence[int],
+    *,
+    promisor: bool,
+) -> tuple[list[tuple[str, ...] | None], list[int], bool]:
     """The paths each commit changed against its first parent, a root against the empty tree,
-    one diff-tree record each, up to the first commit that would cross a budget, and the bytes
-    read through each commit.
+    one diff-tree record each, up to the first commit that would cross a budget or, in a
+    promisor clone, the tree bound; the bytes read through each commit; and whether the tree
+    bound stopped the records.
 
     diff-tree drops a stdin commit it cannot read and still exits 0, so the records are
-    matched to the feed one for one, in order.
+    matched to the feed one for one, in order. At a tree it cannot read it exits 128 after
+    the whole records before that commit and none of that commit's own (measured, 2.56.0: a
+    treeless clone's walk commit, its parent's tree absent, gives no record at all).
     """
     feed = b"".join(" ".join(filter(None, pair)).encode() + b"\n" for pair in listed)
     records: list[list[str]] = []
     counts: list[int] = []
     ends: list[int] = []
     entries = used = 0
-    in_path = False
-    with _Child(git, root, _DIFF_TREE, feed=feed) as child:
+    in_path = bounded = False
+    allowed = (0, _DIED) if promisor else (0,)
+    with _Child(git, root, _DIFF_TREE, feed=feed, allowed=allowed) as child:
         for token in child.tokens(b"\0"):
             used += len(token) + 1
             if in_path:
@@ -337,11 +391,12 @@ def _read_paths(
                 del records[-1], counts[-1], ends[-1]
                 break
         else:
-            if in_path or len(records) != len(listed):
+            bounded = child.returncode == _DIED
+            if in_path or (len(records) < len(listed)) != bounded:
                 raise _framing("diff-tree", f"{len(records)} records for {len(listed)} commits")
     capped = zip(records, counts, strict=True)
     paths = [None if count > PATH_CAP else tuple(names) for names, count in capped]
-    return paths, [before + end for before, end in zip(spent, ends, strict=False)]
+    return paths, [before + end for before, end in zip(spent, ends, strict=False)], bounded
 
 
 def _read_messages(
