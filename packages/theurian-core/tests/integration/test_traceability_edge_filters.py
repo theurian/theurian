@@ -149,3 +149,24 @@ def test_an_endpoint_filter_matches_exactly_its_own_id_among_wildcard_case_and_p
         }
 
     assert answers == {i: (edge,) for i, edge in zip(_AWKWARD_IDS, edges, strict=True)}
+
+
+def test_both_filters_return_the_intersection_where_either_alone_returns_more(
+    database: Path, lock: Path
+) -> None:
+    """Each filter must constrain: `a -> t` is the only edge from `a` that is also to `t`.
+    The type-swapped `t -> a`-shaped row shares both ids and differs by type alone."""
+    wanted = _edge(1, _code("a"), _test("t"))
+    other_source = _edge(2, _code("b"), _test("t"))
+    other_target = _edge(3, _code("a"), _test("u"))
+    swapped = _edge(4, _test("a"), _code("t"))
+
+    with _store(database, lock, wanted, other_source, other_target, swapped) as store:
+        context = RequestContext(project_id=PROJECT)
+        source_alone = store.list_traceability_edges(context, source=_code("a"))
+        target_alone = store.list_traceability_edges(context, target=_test("t"))
+        both = store.list_traceability_edges(context, source=_code("a"), target=_test("t"))
+
+    assert source_alone == (wanted, other_target)
+    assert target_alone == (wanted, other_source)
+    assert both == (wanted,)
