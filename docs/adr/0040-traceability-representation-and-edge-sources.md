@@ -1161,11 +1161,38 @@ above still holds for the port's two methods, by the key
   through its adapter**: their amendments in decision 3, decision 2 (item 12),
   *Neutral* and *Negative*.
 
-Item 1 still owes #1033, after #1092 and #1097: the `TMPDIR`-inside-a-clone
-rehearsal pin; no Git history, an unborn `HEAD`, the depth and budget flags,
-and 3(c)'s cap and capped digest at 32 and 33 ids, each as the collector
-records it; and rows 21 to 25 of #1033's
-*Sentences this slice falsifies*.
+Landed from item 1 below in #1033's prose pull request
+([#1098](https://github.com/theurian/theurian/pull/1098)), in
+`packages/theurian-core/tests/integration/test_edge_collection_cli.py` unless
+another file is named:
+
+- **the `TMPDIR`-inside-a-clone rehearsal pin**:
+  `test_no_replay_walks_with_tmpdir_inside_a_clone_or_outside_any_repository`
+  (`packages/theurian-core/tests/integration/test_relation_cycle_cli.py`): with
+  `TMPDIR` inside the project's clone and then outside it, each of the three
+  replays reports a null walk commit and boundary and 0 edges;
+- **an unborn `HEAD` and the depth and budget flags, as the collector records
+  them**: `test_the_walk_record_and_the_report_are_what_the_walk_returned`,
+  cases `unborn`, `depth` and `budget`, with `walk_first_parent` stubbed, not
+  a real unborn, shallow or bounded repository: the `schema_metadata` walk
+  record and the `--json` report equal the stub's commit, shallow digest and
+  flags, the flags null without a commit, and `unborn` records 0 edges. A real
+  unborn `HEAD`'s walk equals the `unborn` stub in `test_an_unborn_head_walks_nothing`
+  (`packages/theurian-core/tests/integration/test_first_parent_walk.py`);
+- **3(c)'s cap and capped digest at 32 and 33 ids, as the collector records
+  them**: that test's `depth` and `budget` cases, where a commit naming 32
+  distinct valid ids gives 32 edges and one naming 33 gives none and enters the
+  recorded capped digest; the rule and the digest's form, at the function, are
+  `test_a_commit_naming_more_than_32_distinct_valid_ids_yields_no_edges_and_is_capped`
+  and `test_the_capped_digest_is_over_the_sorted_newline_terminated_shas_and_null_with_none`
+  (`packages/theurian-core/tests/unit/test_adr_0040_collection_claims.py`);
+- **rows 21 to 25 of #1033's *Sentences this slice falsifies***, rewritten in
+  the two MCP response schemas: `test_each_sentence_1033_amends_is_still_in_its_file`,
+  `row-21` to `row-25` (`packages/theurian-core/tests/unit/test_adr_0040_claims.py`),
+  each phrase counted 0 times in its file.
+
+Item 1 still owes #1033, after #1092, #1097 and #1098: no Git history, as the
+collector records it.
 
 Still owed, with the issue or slice that will satisfy it:
 

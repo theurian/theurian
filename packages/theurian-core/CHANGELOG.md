@@ -50,8 +50,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     and `commits`. `commits` lists only a commit with something to report, as
     its `sha` with `refused`, `capped`, `undecodable`, `undated` and
     `absentItems`, the count of its edges naming no item in the state built.
-    The text output prints each as one line, the sha followed by its non-zero
-    counts and set flags (`<sha> refused=1 absentItems=5`). No output prints a
+    The text output prints the first 20 as one line each, the sha followed by
+    its non-zero counts and set flags (`<sha> refused=1 absentItems=5`), then
+    one `… and K more; see --json` line for the rest. No output prints a
     trailer value, a commit message byte or an item id.
   - **A walk git cannot answer refuses the apply**, exit 4, before the write
     lock is taken and with nothing written, printing the walk's own reason and
