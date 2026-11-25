@@ -16,6 +16,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -26,6 +27,7 @@ from typer.testing import CliRunner, Result
 
 from theurian.cli import commands
 from theurian.cli.main import app
+from theurian.domain.refs_trailer import capped_digest
 from theurian.infrastructure.git import first_parent_walk as walking
 from theurian.infrastructure.git.first_parent_walk import FirstParentWalk, GitWalkRefusedError
 from theurian.infrastructure.sqlite.store import SqliteWriter
@@ -40,6 +42,11 @@ EDGES: Final = (
     "SELECT source_commit, source_type, source_id, target_type, target_id "
     "FROM traceability_edges ORDER BY 1, 3, 5"
 )
+_RECORD: Final = (
+    "SELECT walk_commit, walk_shallow_digest, walk_depth_bounded, walk_budget_bounded, "
+    "walk_capped_digest FROM schema_metadata"
+)
+_REPORTED: Final = ("walkCommit", "shallowDigest", "depthBounded", "budgetBounded", "cappedDigest")
 _MARK: Final = "echo-marker-7f3"
 #: C2-3's refused shapes (``test_refs_trailer.py``'s ``_HOSTILE``), as one commit's trailers.
 _REFUSED: Final = (
@@ -91,6 +98,10 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "add the migration", extra_env=_DATED)
     return root
+
+
+def _refs(ids: Sequence[str]) -> bytes:
+    return "".join(f"Refs: {i}\n" for i in ids).encode()
 
 
 def _commit(root: Path, path: str, message: str) -> str:
@@ -493,3 +504,45 @@ def test_the_text_form_lists_twenty_flagged_commits_and_counts_the_rest(project:
     assert at_cap == rows[3:]
     assert over == [*rows[:20], "\u2026 and 3 more; see --json"]
     assert [row["sha"] for row in payload["traceability"]["commits"]] == list(reversed(shas))
+
+
+_A, _B, _C, _D = (c * 40 for c in "abcd")
+#: 32 distinct ids, 31 never held: one under 3(c)'s cap, and one more over it.
+_IDS: Final = [ITEM, NEVER, *(f"architecture.n{n}" for n in range(30))]
+_AT: Final = datetime(2026, 1, 1, tzinfo=UTC)
+_WALKED: Final = (
+    walking.WalkedCommit(_A, _AT, ("a.py",), _refs(_IDS)),
+    walking.WalkedCommit(_B, _AT, None, b"Refs: BAD\n"),
+    walking.WalkedCommit(_C, _AT, ("c.py",), _refs([*_IDS, "x.y"])),
+    walking.WalkedCommit(_D, None, ("d.py",), _refs([ITEM])),
+)
+_BOUNDARIES: Final = {
+    "unborn": FirstParentWalk(None, (), None, depth_bounded=False, budget_bounded=False),
+    "depth": FirstParentWalk(_A, _WALKED, "e" * 64, depth_bounded=True, budget_bounded=False),
+    "budget": FirstParentWalk(_A, _WALKED, None, depth_bounded=False, budget_bounded=True),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_BOUNDARIES))
+def test_the_walk_record_and_the_report_are_what_the_walk_returned(
+    project: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """A-M3 (#1097 R1): ADR-0040 decisions 2-4's record, flags, edge count and text form, held
+    with the walk stubbed; the walk's own bounds are ``test_first_parent_walk.py``'s."""
+    walk = _BOUNDARIES[case]
+    monkeypatch.setattr(commands, "walk_first_parent", lambda _: walk)
+
+    result, payload = _apply()
+    text = _listed(runner.invoke(app, ["migrate", "apply"]).stdout)
+
+    walked = walk.walk_commit is not None
+    bounds = (walk.depth_bounded, walk.budget_bounded) if walked else (None, None)
+    capped = capped_digest([_B, _C] if walked else [])
+    record = (walk.walk_commit, walk.shallow_digest, *bounds, capped)
+    flagged = [f"{_A} absentItems=31", f"{_B} refused=1 capped", f"{_C} capped", f"{_D} undated"]
+    report = payload["traceability"]
+    assert result.exit_code == 0, payload
+    assert _rows(project, _RECORD) == [record]
+    assert tuple(report[k] for k in _REPORTED) == record
+    assert report["edges"] == len(_rows(project, EDGES)) == (32 if walked else 0)
+    assert text == (flagged if walked else [])
