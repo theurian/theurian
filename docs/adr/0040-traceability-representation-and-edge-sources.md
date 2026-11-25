@@ -1191,8 +1191,13 @@ another file is named:
   `row-21` to `row-25` (`packages/theurian-core/tests/unit/test_adr_0040_claims.py`),
   each phrase counted 0 times in its file.
 
-Item 1 still owes #1033, after #1092, #1097 and #1098: no Git history, as the
-collector records it.
+With #1092, #1097 and #1098, item 1 is discharged. "No Git history" has no
+collector-level case: outside a Git repository `resolve_context` refuses
+before `migrate apply` reaches the walk (`cli/context.py:279-285`), measured
+with the real CLI on #1098, and
+`test_init_outside_a_git_repository_fails_clearly`
+(`packages/theurian-core/tests/integration/test_cli_commands.py`) holds the
+refusal for `init`; a repository with no commit is the `unborn` case above.
 
 Still owed, with the issue or slice that will satisfy it:
 
