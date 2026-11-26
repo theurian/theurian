@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M8B1PH6QV8N8RXQSHV8N2DQJ",
+  "migrationId": "01M8B1PH6QV8N8RXQSHV8N2DQK",
+  "itemId": "architecture.single-writer-synchronous-in-m1",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "1033-reseed-adr-0018",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "the revision this supersedes pins the body as it stood at 502cd141, and 7b13dca5 (#1098, #1033) moved the source since",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "7b13dca53e1ddf335f99b94a1b80addfecdd1fd2",
+      "filePath": "docs/adr/0018-single-writer-synchronous-in-m1.md"
+    }
+  ]
+}

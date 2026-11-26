@@ -327,10 +327,11 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # commit before 145049a6.
     _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "ADR-0040", 3),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
-    # Re-measured 2026-10-20 for the #979 (#634) re-seed: `#497` counts 1 in both the
-    # new body and the revision it replaced. `#979` counts 1 in the new body and 0 in
-    # all four earlier corpus bodies and at every source commit before 502cd141.
-    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#979", 1),
+    # Re-measured 2026-11-26 for the #1098 re-seed: `#979` counts 1 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `#1033` counts
+    # 1 in the new body and 0 in all five earlier corpus bodies and at every source
+    # commit before 7b13dca5.
+    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#1033", 1),
     # Re-measured 2026-11-14 for #971's re-seed: `T-17a's` counts 1 in both the new
     # body and the revision it replaced, so it stopped discriminating. `#1000`
     # counts 1 in the new body and 0 in both earlier corpus bodies and at every
@@ -359,7 +360,11 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # body and the revision it replaced. "#832" counts 1 in the new body and 0 at
     # every earlier point; it is the issue reference of ADR-0003's amendment block.
     _PayloadMarker(ItemId("architecture.ports-and-adapters"), "#832", 1),
-    _PayloadMarker(ItemId("architecture.state-hash-partitioned-databases"), "#497", 1),
+    # Re-measured 2026-11-26 for the #1098 re-seed: `#497` counts 1 in both the new
+    # body and the revision it replaced, so it stopped discriminating. `#1033` counts
+    # 1 in the new body and 0 in both earlier corpus bodies and at every source
+    # commit before 7b13dca5.
+    _PayloadMarker(ItemId("architecture.state-hash-partitioned-databases"), "#1033", 1),
     _PayloadMarker(ItemId("architecture.index-lives-in-its-own-database"), "#497", 1),
     # Added 2026-10-08 for #832's re-seed, whose ADR-0011 twin gained its second
     # revision. The path-qualified cite counts 1 in the new body and 0 in the body
