@@ -6,7 +6,8 @@ flags; ``test_first_parent_walk.py`` drives each lever decision 2 names and show
 unhardened read but not this one. A git that fails, outlives :data:`GIT_TIMEOUT_SECONDS` or
 prints a stream the framing cannot read refuses with :class:`GitWalkRefusedError`, never
 degrading to fewer commits -- except the promisor read, which answers no instead, and, in a
-promisor clone, diff-tree's exit 128, which is the tree bound (#1103).
+promisor clone, diff-tree's exit 128 at a commit whose root tree or first parent's root tree the
+store lacks, which is the tree bound (#1103, #1105).
 Each spawn's timeout is a deadline, not a wait for pipe EOF
 (#1092 round one): at it, git's process group and then git are killed and the walk refuses at
 once. A descendant that left the group is left running; holding stdout at the deadline, it is
@@ -19,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import itertools
 import os
 import re
 import selectors
@@ -40,7 +42,8 @@ from theurian.infrastructure.git.trailer_source import GIT_TIMEOUT_SECONDS
 #: ADR-0040 decision 2's bounds; a commit that would cross one is not collected, nor any older.
 DEPTH_BOUND: Final = 10_000
 ENTRY_BUDGET: Final = 100_000
-#: Counts rev-list's, diff-tree's and log's stdout; rev-parse's and the shallow file are outside.
+#: Counts the listing's, diff-tree's and log's stdout; rev-parse's, the absence check's and the
+#: shallow file are outside.
 BYTE_BUDGET: Final = 64 << 20
 #: A commit listing more paths gets ``paths=None``; its entries still count.
 PATH_CAP: Final = 1_000
@@ -99,6 +102,13 @@ _HEX_LENGTHS: Final = {b"sha1": 40, b"sha256": 64}
 _CHUNK: Final = 1 << 16
 #: git's ``die()`` status, diff-tree's at a tree it cannot read.
 _DIED: Final = 128
+#: The absence check after that 128. rev-list reads each root tree's name off its commit; log
+#: would die on a diff config value as diff-tree does. cat-file asks the store for nothing but
+#: the name, so a present but corrupt tree answers present (measured, 2.56.0: the default
+#: format answers ``missing`` for a corrupt tree, loose or packed, and ``<commit>^{tree}``
+#: cannot name an absent tree).
+_ROOT_TREES: Final = ("rev-list", "--no-walk=unsorted", "--format=%T", "--stdin")
+_PRESENT: Final = ("cat-file", "--batch-check=%(objectname)")
 
 _INSTALL: Final = "Install git and put it on PATH so 'git --version' runs, then retry."
 _REPAIR: Final = (
@@ -394,9 +404,31 @@ def _read_paths(
             bounded = child.returncode == _DIED
             if in_path or (len(records) < len(listed)) != bounded:
                 raise _framing("diff-tree", f"{len(records)} records for {len(listed)} commits")
+    if bounded and not _root_tree_absent(git, root, listed[len(records)]):
+        raise GitWalkRefusedError("diff-tree", f"git exited with status {_DIED}", _REPAIR)
     capped = zip(records, counts, strict=True)
     paths = [None if count > PATH_CAP else tuple(names) for names, count in capped]
     return paths, [before + end for before, end in zip(spent, ends, strict=False)], bounded
+
+
+def _root_tree_absent(git: str, root: Path, pair: tuple[str, str | None]) -> bool:
+    """Whether the store lacks the root tree of *pair*'s commit or of its first parent."""
+    commits = [sha for sha in pair if sha is not None]
+    feed = b"".join(sha.encode() + b"\n" for sha in commits)
+    with _Child(git, root, _ROOT_TREES, feed=feed) as child:
+        lines = list(itertools.islice(child.tokens(b"\n"), 2 * len(commits) + 1))
+    headers = [b"commit " + sha.encode() for sha in commits]
+    if len(lines) != 2 * len(commits) or lines[::2] != headers:
+        raise _framing("rev-list", "a root tree is not framed under its commit")
+    names = [_oid(line, len(pair[0]), "rev-list").encode() for line in lines[1::2]]
+    with _Child(git, root, _PRESENT, feed=b"".join(name + b"\n" for name in names)) as child:
+        answers = list(itertools.islice(child.tokens(b"\n"), len(names) + 1))
+    if len(answers) != len(names) or any(
+        answer not in (name, name + b" missing")
+        for answer, name in zip(answers, names, strict=True)
+    ):
+        raise _framing("cat-file", "an answer is not its tree's")
+    return any(answer.endswith(b" missing") for answer in answers)
 
 
 def _read_messages(

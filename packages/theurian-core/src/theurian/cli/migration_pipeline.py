@@ -225,8 +225,8 @@ def _collect_edges(
     budget: bool | None = None
     tree: bool | None = None
     if walk.walk_commit is not None:
-        # The tree bound is stored as depth-bounded, the column's sense -- the stored set stops
-        # short of a root -- rather than in a column of its own, a v5 DDL change (#1103).
+        # The depth-bounded column holds the depth bound or the tree bound: a column of the tree
+        # bound's own would be a v5 DDL change (#1103).
         depth, budget = walk.depth_bounded or walk.tree_bounded, walk.budget_bounded
         tree = walk.tree_bounded
     writer.record_walk(walk.walk_commit, walk.shallow_digest, depth, budget, capped)
