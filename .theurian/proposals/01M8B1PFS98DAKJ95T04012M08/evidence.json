@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M8B1PFS98DAKJ95T04012M08",
+  "migrationId": "01M8B1PFS98DAKJ95T04012M09",
+  "itemId": "architecture.state-hash-partitioned-databases",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "1033-reseed-adr-0007",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "the revision this supersedes pins the body as it stood at fffa6b18, and 7b13dca5 (#1098, #1033) moved the source since",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "7b13dca53e1ddf335f99b94a1b80addfecdd1fd2",
+      "filePath": "docs/adr/0007-state-hash-partitioned-databases.md"
+    }
+  ]
+}
