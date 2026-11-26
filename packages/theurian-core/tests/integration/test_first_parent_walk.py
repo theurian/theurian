@@ -289,7 +289,8 @@ def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: s
     shim = _write(
         tmp_path / "shim" / "git",
         f'#!/bin/sh\nREAL="{real}"\nPIDS="{tmp_path / "pids"}"\n'
-        "for a; do case $a in rev-parse|rev-list|diff-tree|log|config) break;; esac; done\n"
+        "for a; do case $a in rev-parse|rev-list|diff-tree|log|config|cat-file) break;; esac\n"
+        "done\n"
         f'case $a in {spawn}) {action};; esac\nexec "$REAL" "$@"\n',
     )
     shim.chmod(0o755)
@@ -923,6 +924,7 @@ PROMISORS: dict[str, Callable[[Path], object]] = {
     "remote-promisor": lambda _repo: None,
     "partial-clone-extension": lambda repo: [
         git(repo, "config", "--unset", "remote.origin.promisor"),
+        git(repo, "config", "--unset", "remote.origin.partialclonefilter"),
         git(repo, "config", "extensions.partialclone", "origin"),
     ],
 }
@@ -1014,3 +1016,107 @@ def test_a_promisor_read_that_fails_answers_no_so_an_unreadable_tree_refuses(
         first_parent_walk._REPAIR,
     )
     assert deadlines * 1.5 <= elapsed < (deadlines + 1) * 1.5, elapsed
+
+
+def _check(action: str) -> str:
+    """*action* for the absence check's rev-list, which shares its name with the listing's."""
+    return f'case "$*" in *--no-walk=unsorted*) {action};; esac'
+
+
+UNTERMINATED = '"$REAL" "$@" | awk \'NR>1{print p}{p=$0}END{printf "%s", p}\'; exit'
+#: The absence check's two spawns made to fail, and the reason each refusal must give.
+FAILED_CHECKS: dict[str, tuple[str, str, str]] = {
+    "rev-list-exit-status": (
+        "rev-list",
+        _check('"$REAL" "$@"; exit 3'),
+        "git exited with status 3",
+    ),
+    "rev-list-unframed": (
+        "rev-list",
+        _check('"$REAL" "$@" | sed 1s/^/x/; exit'),
+        "a root tree is not framed under its commit",
+    ),
+    "rev-list-ends-inside-a-record": (
+        "rev-list",
+        _check(UNTERMINATED),
+        "the output ended inside a record",
+    ),
+    "cat-file-exit-status": ("cat-file", '"$REAL" "$@"; exit 3', "git exited with status 3"),
+    "cat-file-unframed": (
+        "cat-file",
+        '"$REAL" "$@" | sed \'1s/$/ x/\'; exit',
+        "an answer is not its tree's",
+    ),
+    "cat-file-ends-inside-a-record": ("cat-file", UNTERMINATED, "the output ended inside a record"),
+    "cat-file-outlives-the-deadline": (
+        "cat-file",
+        "sleep 6; exit",
+        "git outlived the 1-second bound",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(FAILED_CHECKS))
+def test_an_absence_check_that_fails_refuses_naming_its_spawn(
+    case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1105 R1: a check answering "absent" when it fails would make any diff-tree 128 the bound."""
+    spawn, action, reason = FAILED_CHECKS[case]
+    repo, _ = _treeless(tmp_path)
+    assert walk_first_parent(repo).tree_bounded, "the unshimmed check must find a root tree absent"
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 1.0)
+    _shim(tmp_path, monkeypatch, spawn, action)
+    started = time.monotonic()
+
+    refusal = _refused(repo)
+
+    assert time.monotonic() - started < 3, "the walk waited past its bound for git"
+    assert (refusal.spawn, refusal.reason) == (spawn, reason)
+
+
+def _blobless(tmp_path: Path) -> tuple[Path, list[str]]:
+    """A ``--filter=blob:none`` clone, which holds every tree, of commits adding 1, 2 and 3 paths
+    under a directory each, its objects unpacked loose so one can be damaged alone."""
+    origin = tmp_path / "origin"
+    shas = _linear(origin, 1, 2, 3)
+    git(origin, "config", "uploadpack.allowFilter", "true")
+    repo = clone(origin, tmp_path / "repo", "--filter=blob:none", "--no-checkout")
+    packs = (repo / ".git" / "objects" / "pack").rename(tmp_path / "packs")
+    unpack = ["git", "unpack-objects", "-q"]
+    for pack in packs.glob("*.pack"):
+        subprocess.run(unpack, cwd=repo, input=pack.read_bytes(), check=True)  # noqa: S603
+    return repo, shas
+
+
+def _corrupt(loose: Path) -> None:
+    loose.chmod(0o644)
+    loose.write_bytes(b"garbage")
+
+
+#: Damage the bound must not take: a held root tree git cannot read, which stops diff-tree at the
+#: walk commit, and the subtree ``HEAD~1`` adds, which stops it at ``HEAD~1`` with both of that
+#: pair's root trees held (measured).
+DAMAGE: dict[str, tuple[str, Callable[[Path], object]]] = {
+    "corrupt-root-tree": ("HEAD~1^{tree}", _corrupt),
+    "absent-subtree": ("HEAD~1:1", Path.unlink),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(DAMAGE))
+def test_a_promisor_clone_damaged_under_held_root_trees_refuses_with_the_fetch(
+    damage: str, tmp_path: Path
+) -> None:
+    """#1105 R1: both were taken as the tree bound, which drops every edge below the damage."""
+    name, plant = DAMAGE[damage]
+    repo, shas = _blobless(tmp_path)
+    assert [commit.sha for commit in walk_first_parent(repo).commits] == shas
+    oid = _rev(repo, name)
+    plant(repo / ".git" / "objects" / oid[:2] / oid[2:])
+
+    refusal = _refused(repo)
+
+    assert (refusal.spawn, refusal.reason, refusal.remedy) == (
+        "diff-tree",
+        "git exited with status 128",
+        first_parent_walk._FETCH,
+    )

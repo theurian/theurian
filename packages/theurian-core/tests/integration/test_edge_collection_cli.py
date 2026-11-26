@@ -184,8 +184,9 @@ def _subcommand(argv: Sequence[str]) -> str:
     return ""
 
 
+@pytest.mark.parametrize("treeless", [False, True], ids=["full", "tree-bound"])
 def test_no_git_process_starts_while_the_write_lock_is_held(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    treeless: bool, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """NFR-8 (D2b): the walk reads git before the lock; under it the apply is CPU and SQLite.
 
@@ -193,7 +194,8 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
     reading at the replace, which runs under the lock, is what makes a False reading mean free.
     """
     _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
-    lock = project / ".theurian/runtime/write.lock"
+    root = _treeless(project, tmp_path, monkeypatch) if treeless else project
+    lock = root / ".theurian/runtime/write.lock"
     spawns: list[tuple[str, bool]] = []
     at_replace: list[bool] = []
     spawn, write = subprocess.Popen.__init__, SqliteWriter.replace_traceability_edges
@@ -211,10 +213,10 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
 
     result, payload = _apply()
 
-    assert result.exit_code == 0, payload
+    assert (result.exit_code, payload["traceability"]["treeBounded"]) == (0, treeless), payload
     assert at_replace == [True]
     assert [name for name, held in spawns if held] == [], spawns
-    assert {"rev-parse", "config", "rev-list", "diff-tree", "log"} <= {
+    assert {"rev-parse", "config", "rev-list", "diff-tree", "cat-file" if treeless else "log"} <= {
         n for n, held in spawns if not held
     }
 
@@ -570,6 +572,7 @@ def test_the_walk_record_and_the_report_are_what_the_walk_returned(
     assert result.exit_code == 0, payload
     assert _rows(project, _RECORD) == [record]
     assert tuple(report[k] for k in _REPORTED) == record
+    assert report["treeBounded"] is (walk.tree_bounded if walked else None)
     assert report["edges"] == len(_rows(project, EDGES)) == (32 if walked else 0)
     assert text == (flagged if walked else [])
 
@@ -694,3 +697,30 @@ def test_a_tree_missing_where_no_remote_promises_it_refuses_with_the_fsck_remedy
             "remedy": walking._REPAIR,
         },
     )
+
+
+def test_a_promisor_clone_whose_diff_tree_dies_on_its_config_refuses_and_keeps_the_edges(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1105 R1 adversarial HIGH: the 128 was the tree bound, so this undamaged clone recorded
+    no edges."""
+    head = _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    git(project, "config", "uploadpack.allowFilter", "true")
+    repo = clone(project, tmp_path / "blobless", "--filter=blob:none")
+    monkeypatch.chdir(repo)
+    whole, walked = _apply()
+    record = _rows(repo, _RECORD)
+    git(repo, "config", "diff.renameLimit", "1k0")
+
+    result, payload = _apply()
+
+    assert (whole.exit_code, walked["traceability"]["treeBounded"]) == (0, False), walked
+    assert (result.exit_code, payload) == (
+        4,
+        {
+            "error": "First-parent walk refused at git diff-tree: git exited with status 128",
+            "remedy": walking._FETCH,
+        },
+    )
+    assert _rows(repo, EDGES) == [(head, "code", "a.py", "knowledge", ITEM)]
+    assert _rows(repo, _RECORD) == record
