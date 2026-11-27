@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-from git_isolation_fixtures import git, new_repo
+from git_isolation_fixtures import clone, git, new_repo
 from label_inheritance_support import BODY, ROOT_MIGRATION_ID, ROOT_REVISION_ID, root_migration
 from typer.testing import CliRunner, Result
 
@@ -184,8 +184,9 @@ def _subcommand(argv: Sequence[str]) -> str:
     return ""
 
 
+@pytest.mark.parametrize("treeless", [False, True], ids=["full", "tree-bound"])
 def test_no_git_process_starts_while_the_write_lock_is_held(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    treeless: bool, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """NFR-8 (D2b): the walk reads git before the lock; under it the apply is CPU and SQLite.
 
@@ -193,7 +194,8 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
     reading at the replace, which runs under the lock, is what makes a False reading mean free.
     """
     _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
-    lock = project / ".theurian/runtime/write.lock"
+    root = _treeless(project, tmp_path, monkeypatch) if treeless else project
+    lock = root / ".theurian/runtime/write.lock"
     spawns: list[tuple[str, bool]] = []
     at_replace: list[bool] = []
     spawn, write = subprocess.Popen.__init__, SqliteWriter.replace_traceability_edges
@@ -211,10 +213,12 @@ def test_no_git_process_starts_while_the_write_lock_is_held(
 
     result, payload = _apply()
 
-    assert result.exit_code == 0, payload
+    assert (result.exit_code, payload["traceability"]["treeBounded"]) == (0, treeless), payload
     assert at_replace == [True]
     assert [name for name, held in spawns if held] == [], spawns
-    assert {"rev-parse", "rev-list", "diff-tree", "log"} <= {n for n, held in spawns if not held}
+    assert {"rev-parse", "config", "rev-list", "diff-tree", "cat-file" if treeless else "log"} <= {
+        n for n, held in spawns if not held
+    }
 
 
 def test_a_withheld_item_and_one_never_held_differ_only_in_the_absent_item_count(
@@ -453,7 +457,7 @@ def test_the_apply_report_publishes_exactly_these_keys(project: Path) -> None:
     ]
     assert sorted(payload["traceability"]) == [
         *("budgetBounded", "cappedDigest", "commits", "depthBounded", "edges", "shallowDigest"),
-        "walkCommit",
+        *("treeBounded", "walkCommit"),
     ]
     assert [sorted(row) for row in payload["traceability"]["commits"]] == [
         ["absentItems", "capped", "refused", "sha", "undated", "undecodable"]
@@ -568,6 +572,7 @@ def test_the_walk_record_and_the_report_are_what_the_walk_returned(
     assert result.exit_code == 0, payload
     assert _rows(project, _RECORD) == [record]
     assert tuple(report[k] for k in _REPORTED) == record
+    assert report["treeBounded"] is (walk.tree_bounded if walked else None)
     assert report["edges"] == len(_rows(project, EDGES)) == (32 if walked else 0)
     assert text == (flagged if walked else [])
 
@@ -603,3 +608,119 @@ def test_a_rename_commit_records_an_edge_for_both_paths(project: Path) -> None:
     assert _rows(project, EDGES) == [
         (head, "code", path, "knowledge", ITEM) for path in ("a.py", "b.py")
     ]
+
+
+def _treeless(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """*project* cloned ``--filter=tree:0``, as the cwd."""
+    git(project, "config", "uploadpack.allowFilter", "true")
+    repo = clone(project, tmp_path / "treeless", "--filter=tree:0")
+    monkeypatch.chdir(repo)
+    return repo
+
+
+def _fetch_trees(repo: Path, *flags: str) -> None:
+    """The trees ``git log`` diffs over, fetched by a git allowed to fetch lazily."""
+    git(repo, "log", "--first-parent", "--name-status", *flags, "HEAD")
+
+
+@pytest.mark.parametrize("readable", [0, 1, 2])
+def test_a_treeless_clone_applies_recording_edges_only_from_commits_whose_trees_it_holds(
+    readable: int, project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1103: ``migrate apply`` exited 4 here. A fresh clone holds no walk-commit parent tree, so
+    it records nothing; each commit whose trees are fetched adds its edge, and none below."""
+    made = [
+        (_commit(project, f"{n}.py", f"change {n}\n\nRefs: {ITEM}\n"), f"{n}.py") for n in range(3)
+    ]
+    made.reverse()
+    repo = _treeless(project, tmp_path, monkeypatch)
+    _fetch_trees(repo, f"--max-count={readable}")
+
+    result, payload = _apply()
+
+    assert result.exit_code == 0, payload
+    trace = payload["traceability"]
+    assert (trace["walkCommit"], trace["edges"]) == (made[0][0], readable)
+    assert (trace["treeBounded"], trace["depthBounded"], trace["budgetBounded"]) == (
+        True,
+        True,
+        False,
+    )
+    assert _rows(repo, EDGES) == sorted(
+        (sha, "code", path, "knowledge", ITEM) for sha, path in made[:readable]
+    )
+    assert _rows(repo, "SELECT walk_depth_bounded, walk_budget_bounded FROM schema_metadata") == [
+        (1, 0)
+    ]
+
+
+def test_a_tree_bounded_apply_replaces_a_whole_walk_s_edges_with_the_read_commits_alone(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0040 decision 2's whole-table replace under #1103's bound: an edge a fuller earlier
+    walk recorded below the bound is not kept."""
+    first = _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    repo = _treeless(project, tmp_path, monkeypatch)
+    _fetch_trees(repo)
+    whole, walked = _apply()
+    head = [_commit(project, f"{n}.py", f"change {n}\n\nRefs: {ITEM}\n") for n in range(3)][-1]
+    git(repo, "pull", "-q", "--ff-only")
+    _fetch_trees(repo, "--max-count=1")
+
+    result, payload = _apply()
+
+    assert whole.exit_code == 0, walked
+    assert (walked["traceability"]["edges"], walked["traceability"]["treeBounded"]) == (1, False)
+    assert result.exit_code == 0, payload
+    assert (payload["traceability"]["edges"], payload["traceability"]["treeBounded"]) == (1, True)
+    assert first != head
+    assert _rows(repo, EDGES) == [(head, "code", "2.py", "knowledge", ITEM)]
+
+
+def test_a_tree_missing_where_no_remote_promises_it_refuses_with_the_fsck_remedy(
+    project: Path,
+) -> None:
+    """#1103's bound is a promisor clone's alone: elsewhere no remote will supply the tree, so it
+    is damage for the fsck remedy, never a bound."""
+    _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    whole, walked = _apply()
+    tree = git(project, "rev-parse", "HEAD~1^{tree}").strip()
+    (project / ".git/objects" / tree[:2] / tree[2:]).unlink()
+
+    result, payload = _apply()
+
+    assert (whole.exit_code, walked["traceability"]["edges"]) == (0, 1), walked
+    assert (result.exit_code, payload) == (
+        4,
+        {
+            "error": "First-parent walk refused at git diff-tree: git exited with status 128",
+            "remedy": walking._REPAIR,
+        },
+    )
+
+
+def test_a_promisor_clone_whose_diff_tree_dies_on_its_config_refuses_and_keeps_the_edges(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1105 R1 adversarial HIGH: the 128 was the tree bound, so this undamaged clone recorded
+    no edges."""
+    head = _commit(project, "a.py", f"change a\n\nRefs: {ITEM}\n")
+    git(project, "config", "uploadpack.allowFilter", "true")
+    repo = clone(project, tmp_path / "blobless", "--filter=blob:none")
+    monkeypatch.chdir(repo)
+    whole, walked = _apply()
+    record = _rows(repo, _RECORD)
+    git(repo, "config", "diff.renameLimit", "1k0")
+
+    result, payload = _apply()
+
+    assert (whole.exit_code, walked["traceability"]["treeBounded"]) == (0, False), walked
+    assert (result.exit_code, payload) == (
+        4,
+        {
+            "error": "First-parent walk refused at git diff-tree: git exited with status 128",
+            "remedy": walking._FETCH,
+        },
+    )
+    assert _rows(repo, EDGES) == [(head, "code", "a.py", "knowledge", ITEM)]
+    assert _rows(repo, _RECORD) == record

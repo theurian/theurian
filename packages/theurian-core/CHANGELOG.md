@@ -46,8 +46,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `knowledge.trace` is [#1034](https://github.com/theurian/theurian/issues/1034),
   and `system.capabilities` still reports `traceability: false`.
   - **`migrate apply --json` gains a `traceability` key**: `walkCommit`,
-    `edges`, `shallowDigest`, `depthBounded`, `budgetBounded`, `cappedDigest`
-    and `commits`. `commits` lists only a commit with something to report, as
+    `edges`, `shallowDigest`, `depthBounded`, `budgetBounded`, `treeBounded`,
+    `cappedDigest` and `commits`. `commits` lists only a commit with something to report, as
     its `sha` with `refused`, `capped`, `undecodable`, `undated` and
     `absentItems`, the count of its edges naming no item in the state built.
     The text output prints the first 20 as one line each, the sha followed by
@@ -204,6 +204,30 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   corrected in place.
 
 ### Fixed
+
+- **`theurian migrate apply` applies on a treeless partial clone again**
+  ([#1103](https://github.com/theurian/theurian/issues/1103)). On a
+  `git clone --filter=tree:0` clone it exited 4 at `git diff-tree` with a
+  `git fsck` remedy that could not cure it, since fsck exits 0 there: a
+  regression against 0.5.3 that no release carried. In a promisor clone, a
+  `git diff-tree` exit 128 now bounds the edge walk at the commit diff-tree
+  stopped at, instead of refusing it, only where git does not find that
+  commit's root tree or its first parent's: no edge is recorded from that
+  commit on, and a walk the tree bound stopped reports `treeBounded` and
+  `depthBounded` true. Where git finds both root trees, every exit 128
+  refuses, whatever caused it. The walk still fetches nothing; a refusal for
+  that exit status names `git log --first-parent --name-status HEAD`, which
+  does. Where git does not find one, the bound holds whatever else stopped
+  diff-tree there, such as a configuration value it dies on or damage to the
+  other root tree. Git does not find a tree held only in a pack it cannot
+  open; [#1110](https://github.com/theurian/theurian/issues/1110) tracks
+  refusing on that damage instead. The walk reads a
+  clone as a promisor from a true `remote.<name>.promisor`, which
+  `git clone --filter` and `git fetch --filter` write, or from
+  `extensions.partialClone`. A tree missing anywhere else still refuses with
+  the fsck remedy, and that includes a clone where only a hand-set
+  `remote.<name>.partialclonefilter` makes git a promisor
+  ([#1108](https://github.com/theurian/theurian/issues/1108)).
 
 - **The recorded remote URL no longer carries credentials**
   ([#1061](https://github.com/theurian/theurian/issues/1061)). `repository_url`

@@ -389,5 +389,5 @@ def test_no_replay_walks_with_tmpdir_inside_a_clone_or_outside_any_repository(
         assert cli("propose", "accept", drafted["proposalId"])[0] == 0, drafted
 
     replays = {name for _, _, name in SITES} - {"apply_migration_set"}
-    null = EdgeCollection(None, 0, None, None, None, None, ())
+    null = EdgeCollection(None, 0, None, None, None, None, None, ())
     assert seen == {(str(s), name, null) for s in scratches for name in replays}

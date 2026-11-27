@@ -2998,6 +2998,7 @@ def _traceability_fields(
         "shallowDigest": collection.shallow_digest,
         "depthBounded": collection.depth_bounded,
         "budgetBounded": collection.budget_bounded,
+        "treeBounded": collection.tree_bounded,
         "cappedDigest": collection.capped_digest,
         "commits": commits,
     }

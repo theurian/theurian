@@ -223,8 +223,12 @@ def _collect_edges(
     capped = capped_digest(refs.sha for refs in walked if refs.capped)
     depth: bool | None = None
     budget: bool | None = None
+    tree: bool | None = None
     if walk.walk_commit is not None:
-        depth, budget = walk.depth_bounded, walk.budget_bounded
+        # The depth-bounded column holds the depth bound or the tree bound: a column of the tree
+        # bound's own would be a v5 DDL change (#1103).
+        depth, budget = walk.depth_bounded or walk.tree_bounded, walk.budget_bounded
+        tree = walk.tree_bounded
     writer.record_walk(walk.walk_commit, walk.shallow_digest, depth, budget, capped)
     absent = writer.count_edges_naming_no_item(project_id)
     reported = (
@@ -235,7 +239,7 @@ def _collect_edges(
         c for c in reported if c.refused or c.capped or c.undecodable or c.undated or c.absent_items
     )
     return EdgeCollection(
-        walk.walk_commit, count, walk.shallow_digest, depth, budget, capped, flagged
+        walk.walk_commit, count, walk.shallow_digest, depth, budget, tree, capped, flagged
     )
 
 
