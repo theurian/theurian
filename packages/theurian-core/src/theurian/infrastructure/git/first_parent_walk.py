@@ -83,10 +83,11 @@ _DIFF_TREE: Final = (
     "--always",
     "--ignore-submodules=none",
 )
-#: Whether git here would lazily fetch an absent object, as ``promisor-remote.c`` decides and its
-#: lazy fetch shows (measured, 2.56.0): any true ``remote.<name>.promisor`` in config as git reads
-#: it, includes and ``config.worktree`` too, or else an ``extensions.partialClone`` in the common
-#: directory's config file alone.
+#: Whether git here would lazily fetch an absent object, by two of the keys ``promisor-remote.c``
+#: reads, as its lazy fetch shows (measured, 2.56.0): any true ``remote.<name>.promisor`` in config
+#: as git reads it, includes and ``config.worktree`` too, or else an ``extensions.partialClone`` in
+#: the common directory's config file alone. A ``remote.<name>.partialclonefilter`` set without
+#: ``promisor`` makes git fetch lazily too; this answers no there, so the walk refuses (#1108).
 _PROMISOR_REMOTE: Final = (
     "config",
     "--type=bool",

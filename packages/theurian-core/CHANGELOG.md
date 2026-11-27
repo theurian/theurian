@@ -210,12 +210,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `git clone --filter=tree:0` clone it exited 4 at `git diff-tree` with a
   `git fsck` remedy that could not cure it, since fsck exits 0 there: a
   regression against 0.5.3 that no release carried. In a promisor clone the
-  first commit whose trees the clone does not hold now bounds the edge walk:
-  the apply records edges from the commits before it, none on a fresh treeless
-  clone, and reports `treeBounded` and `depthBounded` true. The walk still
+  first commit whose root tree, or whose first parent's root tree, the clone
+  does not hold now bounds the edge walk: the apply records edges from the
+  commits before it, none on a fresh treeless clone, and reports `treeBounded`
+  and `depthBounded` true. Only an absent root tree bounds it: a tree present
+  but corrupt, a tree missing below root trees the clone holds, and a git
+  configuration value `git diff-tree` dies on still refuse. The walk still
   fetches nothing; a refusal there names
-  `git log --first-parent --name-status HEAD`, which does. A tree missing from a
-  repository that names no promisor remote still refuses with the fsck remedy.
+  `git log --first-parent --name-status HEAD`, which does. The walk reads a
+  clone as a promisor from a true `remote.<name>.promisor`, which
+  `git clone --filter` and `git fetch --filter` write, or from
+  `extensions.partialClone`. A tree missing anywhere else still refuses with
+  the fsck remedy, and that includes a clone where only a hand-set
+  `remote.<name>.partialclonefilter` makes git a promisor
+  ([#1108](https://github.com/theurian/theurian/issues/1108)).
 
 - **The recorded remote URL no longer carries credentials**
   ([#1061](https://github.com/theurian/theurian/issues/1061)). `repository_url`
