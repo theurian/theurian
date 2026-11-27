@@ -209,20 +209,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#1103](https://github.com/theurian/theurian/issues/1103)). On a
   `git clone --filter=tree:0` clone it exited 4 at `git diff-tree` with a
   `git fsck` remedy that could not cure it, since fsck exits 0 there: a
-  regression against 0.5.3 that no release carried. In a promisor clone the
-  first commit whose root tree, or whose first parent's root tree, the clone
-  does not hold now bounds the edge walk: the apply records edges from the
-  commits before it, none on a fresh treeless clone, and reports `treeBounded`
-  and `depthBounded` true. Only a root tree git does not find bounds it: a tree
-  git finds and cannot read, a tree missing below root trees the clone holds,
-  and, where the clone holds the root trees of the commit `git diff-tree`
-  stopped at and of its first parent, a git configuration value diff-tree dies
-  on still refuse. The walk still fetches nothing; a refusal there names
-  `git log --first-parent --name-status HEAD`, which does. A root tree in a
-  pack git cannot open reads as absent, as git itself reads it, and bounds the
-  walk; `git fsck` reports that damage, and
-  [#1110](https://github.com/theurian/theurian/issues/1110) tracks refusing on
-  it instead. The walk reads a
+  regression against 0.5.3 that no release carried. In a promisor clone, a
+  `git diff-tree` exit 128 now bounds the edge walk at the commit diff-tree
+  stopped at, instead of refusing it, only where git does not find that
+  commit's root tree or its first parent's: no edge is recorded from that
+  commit on, and a walk the tree bound stopped reports `treeBounded` and
+  `depthBounded` true. Where git finds both root trees, every exit 128
+  refuses, whatever caused it. The walk still fetches nothing; a refusal for
+  that exit status names `git log --first-parent --name-status HEAD`, which
+  does. Where git does not find one, the bound holds whatever else stopped
+  diff-tree there, such as a configuration value it dies on or damage to the
+  other root tree. Git does not find a tree held only in a pack it cannot
+  open; [#1110](https://github.com/theurian/theurian/issues/1110) tracks
+  refusing on that damage instead. The walk reads a
   clone as a promisor from a true `remote.<name>.promisor`, which
   `git clone --filter` and `git fetch --filter` write, or from
   `extensions.partialClone`. A tree missing anywhere else still refuses with

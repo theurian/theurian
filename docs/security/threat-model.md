@@ -2105,12 +2105,12 @@ other's blind spots.
   [#1103](https://github.com/theurian/theurian/issues/1103), `config` once or
   twice before `rev-list`, asking whether any `remote.<name>.promisor` is true
   or, failing that, whether the repository's own config sets
-  `extensions.partialclone`, so that a root tree a partial clone does not hold
-  bounds the walk instead of refusing it, and, after a `diff-tree` exit 128
+  `extensions.partialclone`, so that a root tree git does not find in a partial
+  clone bounds the walk instead of refusing it, and, after a `diff-tree` exit 128
   there, `rev-list --no-walk=unsorted --format=%T --stdin`, fed the commit
   `diff-tree` stopped at and its first parent, which prints their root-tree
   names, then `cat-file --batch-check=%(objectname)`, fed those names, which
-  asks the local object store whether it holds each one
+  asks git whether it finds each one in the local object store
   (ADR-0040, amended 2026-11-25); since ADR-0029's
   trailer source landed, `infrastructure/git/trailer_source.py`, which runs
   `git log` over the pinned

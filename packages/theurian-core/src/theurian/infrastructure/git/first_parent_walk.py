@@ -6,8 +6,8 @@ flags; ``test_first_parent_walk.py`` drives each lever decision 2 names and show
 unhardened read but not this one. A git that fails, outlives :data:`GIT_TIMEOUT_SECONDS` or
 prints a stream the framing cannot read refuses with :class:`GitWalkRefusedError`, never
 degrading to fewer commits -- except the promisor read, which answers no instead, and, in a
-promisor clone, diff-tree's exit 128 at a commit whose root tree or first parent's root tree the
-store lacks, which is the tree bound (#1103, #1105).
+promisor clone, diff-tree's exit 128 at a commit whose root tree or first parent's root tree git
+does not find, which is the tree bound (#1103, #1105).
 Each spawn's timeout is a deadline, not a wait for pipe EOF
 (#1092 round one): at it, git's process group and then git are killed and the walk refuses at
 once. A descendant that left the group is left running; holding stdout at the deadline, it is
@@ -103,13 +103,13 @@ _HEX_LENGTHS: Final = {b"sha1": 40, b"sha256": 64}
 _CHUNK: Final = 1 << 16
 #: git's ``die()`` status, diff-tree's at a tree it cannot read.
 _DIED: Final = 128
-#: The absence check after that 128. rev-list reads each root tree's name off its commit; log
-#: would die on a diff config value as diff-tree does. cat-file asks the store for nothing but
-#: the name, so a corrupt tree git finds answers present, and one in a pack git cannot open
-#: answers ``missing`` and bounds, as git reads it (ADR-0040's residual, #1110). Measured,
-#: 2.56.0: the default format answers ``missing``, or dies, for a loose tree damaged near its
-#: start, and ``missing`` for a packed one whose entry header is damaged; ``<commit>^{tree}``
-#: cannot name an absent tree.
+#: The absence check after that 128. rev-list reads each root tree's name off its commit, and
+#: cat-file is asked for nothing but the name: a tree is absent to the walk exactly when it
+#: answers ``missing``, and one held only in a pack git cannot open is (ADR-0040's residuals,
+#: #1110). Measured at 2.56.0, for example: the default format, which also reads type and
+#: size, answered ``missing`` for a loose tree with its first byte flipped; log died on
+#: ``diff.renameLimit = 1k0`` as diff-tree did; and ``rev-parse --verify --quiet`` printed no
+#: name for an absent ``<commit>^{tree}``.
 _ROOT_TREES: Final = ("rev-list", "--no-walk=unsorted", "--format=%T", "--stdin")
 _PRESENT: Final = ("cat-file", "--batch-check=%(objectname)")
 
@@ -415,7 +415,7 @@ def _read_paths(
 
 
 def _root_tree_absent(git: str, root: Path, pair: tuple[str, str | None]) -> bool:
-    """Whether the store lacks the root tree of *pair*'s commit or of its first parent."""
+    """Whether git does not find the root tree of *pair*'s commit or of its first parent."""
     commits = [sha for sha in pair if sha is not None]
     feed = b"".join(sha.encode() + b"\n" for sha in commits)
     with _Child(git, root, _ROOT_TREES, feed=feed) as child:
