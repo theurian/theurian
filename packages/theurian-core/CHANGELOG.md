@@ -213,11 +213,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   first commit whose root tree, or whose first parent's root tree, the clone
   does not hold now bounds the edge walk: the apply records edges from the
   commits before it, none on a fresh treeless clone, and reports `treeBounded`
-  and `depthBounded` true. Only an absent root tree bounds it: a tree present
-  but corrupt, a tree missing below root trees the clone holds, and a git
-  configuration value `git diff-tree` dies on still refuse. The walk still
-  fetches nothing; a refusal there names
-  `git log --first-parent --name-status HEAD`, which does. The walk reads a
+  and `depthBounded` true. Only a root tree git does not find bounds it: a tree
+  git finds and cannot read, a tree missing below root trees the clone holds,
+  and, where the clone holds the root trees of the commit `git diff-tree`
+  stopped at and of its first parent, a git configuration value diff-tree dies
+  on still refuse. The walk still fetches nothing; a refusal there names
+  `git log --first-parent --name-status HEAD`, which does. A root tree in a
+  pack git cannot open reads as absent, as git itself reads it, and bounds the
+  walk; `git fsck` reports that damage, and
+  [#1110](https://github.com/theurian/theurian/issues/1110) tracks refusing on
+  it instead. The walk reads a
   clone as a promisor from a true `remote.<name>.promisor`, which
   `git clone --filter` and `git fetch --filter` write, or from
   `extensions.partialClone`. A tree missing anywhere else still refuses with

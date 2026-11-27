@@ -105,9 +105,11 @@ _CHUNK: Final = 1 << 16
 _DIED: Final = 128
 #: The absence check after that 128. rev-list reads each root tree's name off its commit; log
 #: would die on a diff config value as diff-tree does. cat-file asks the store for nothing but
-#: the name, so a present but corrupt tree answers present (measured, 2.56.0: the default
-#: format answers ``missing`` for a corrupt tree, loose or packed, and ``<commit>^{tree}``
-#: cannot name an absent tree).
+#: the name, so a corrupt tree git finds answers present, and one in a pack git cannot open
+#: answers ``missing`` and bounds, as git reads it (ADR-0040's residual, #1110). Measured,
+#: 2.56.0: the default format answers ``missing``, or dies, for a loose tree damaged near its
+#: start, and ``missing`` for a packed one whose entry header is damaged; ``<commit>^{tree}``
+#: cannot name an absent tree.
 _ROOT_TREES: Final = ("rev-list", "--no-walk=unsorted", "--format=%T", "--stdin")
 _PRESENT: Final = ("cat-file", "--batch-check=%(objectname)")
 
